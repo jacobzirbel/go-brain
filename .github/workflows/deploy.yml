@@ -16,4 +16,4 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           port: 22
           script: sudo /opt/go-brain/deploy.sh
-          host_key_check: false
+          known_hosts: "unnecessary"
