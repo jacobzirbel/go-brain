@@ -12,6 +12,7 @@ var ErrNotFound = errors.New("not found")
 type FileEntry struct {
 	Filename  string `json:"filename"`
 	UpdatedAt string `json:"updated_at"`
+	Size      int    `json:"size"`
 }
 
 type Store interface {
@@ -150,7 +151,7 @@ func (s *SQLiteStore) ListNamespaces() ([]string, error) {
 
 func (s *SQLiteStore) List(namespace string) ([]FileEntry, error) {
 	rows, err := s.db.Query(
-		`SELECT filename, updated_at FROM entries WHERE namespace=? ORDER BY filename`,
+		`SELECT filename, updated_at, length(content) FROM entries WHERE namespace=? ORDER BY filename`,
 		namespace,
 	)
 	if err != nil {
@@ -160,7 +161,7 @@ func (s *SQLiteStore) List(namespace string) ([]FileEntry, error) {
 	files := []FileEntry{}
 	for rows.Next() {
 		var f FileEntry
-		if err := rows.Scan(&f.Filename, &f.UpdatedAt); err != nil {
+		if err := rows.Scan(&f.Filename, &f.UpdatedAt, &f.Size); err != nil {
 			return nil, err
 		}
 		files = append(files, f)
