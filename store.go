@@ -21,6 +21,9 @@ type Store interface {
 	Delete(namespace, filename string) error
 	List(namespace string) ([]FileEntry, error)
 	ListNamespaces() ([]string, error)
+	CreateSession(token string) error
+	HasSession(token string) (bool, error)
+	DeleteSession(token string) error
 }
 
 type SQLiteStore struct {
@@ -42,7 +45,36 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS ui_sessions (
+		token      TEXT PRIMARY KEY,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`)
+	if err != nil {
+		return nil, err
+	}
 	return &SQLiteStore{db: db}, nil
+}
+
+func (s *SQLiteStore) CreateSession(token string) error {
+	_, err := s.db.Exec(`INSERT INTO ui_sessions (token) VALUES (?)`, token)
+	return err
+}
+
+func (s *SQLiteStore) HasSession(token string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT 1 FROM ui_sessions WHERE token=?`, token).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *SQLiteStore) DeleteSession(token string) error {
+	_, err := s.db.Exec(`DELETE FROM ui_sessions WHERE token=?`, token)
+	return err
 }
 
 func (s *SQLiteStore) Read(namespace, filename string) (string, string, error) {

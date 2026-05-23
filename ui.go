@@ -9,7 +9,6 @@ import (
 )
 
 const sessionCookieName = "gobrain_session"
-const sessionPrefix = "ui:"
 
 func setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
@@ -38,7 +37,8 @@ func currentSession(r *http.Request) (string, bool) {
 	if err != nil || c.Value == "" {
 		return "", false
 	}
-	if !hasToken(sessionPrefix + c.Value) {
+	ok, err := store.HasSession(c.Value)
+	if err != nil || !ok {
 		return "", false
 	}
 	return c.Value, true
@@ -75,14 +75,17 @@ func handleUILoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok := randHex(32)
-	addToken(sessionPrefix + tok)
+	if err := store.CreateSession(tok); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	setSessionCookie(w, tok)
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
 func handleUILogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil {
-		deleteToken(sessionPrefix + c.Value)
+		_ = store.DeleteSession(c.Value)
 	}
 	clearSessionCookie(w)
 	http.Redirect(w, r, "/ui/login", http.StatusFound)
@@ -208,43 +211,61 @@ func registerUIRoutes(mux *http.ServeMux) {
 }
 
 const uiCSS = `
-  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 20px; color: #1f2937; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; color: #1f2937; font-size: 16px; line-height: 1.5; }
+  h1 { font-size: 24px; }
+  h2 { font-size: 20px; }
   h1, h2, h3 { margin: 0 0 12px; }
   a { color: #2563eb; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
-  header nav a { margin-left: 16px; }
-  .ns { background: #f9fafb; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #e5e7eb; }
-  .ns h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 8px; }
-  .ns ul { margin: 0; padding-left: 20px; }
-  .ns li { margin: 4px 0; }
+  a:active { opacity: 0.6; }
+  @media (hover: hover) { a:hover { text-decoration: underline; } }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
+  header h1 { font-size: 20px; }
+  header nav { display: flex; gap: 12px; }
+  .ns { background: #f9fafb; padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid #e5e7eb; }
+  .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .ns ul { list-style: none; margin: 0; padding: 0; }
+  .ns li { padding: 10px 0; border-top: 1px solid #eef0f2; line-height: 1.4; }
+  .ns li:first-child { border-top: none; }
+  .ns li a { font-size: 16px; word-break: break-word; }
   .meta { color: #6b7280; font-size: 13px; }
-  pre { background: #f9fafb; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #e5e7eb; }
-  textarea, input[type=text], input[type=password] { width: 100%; padding: 10px; font-size: 14px; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 6px; font-family: inherit; }
-  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 400px; }
-  button, .btn { background: #2563eb; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; display: inline-block; }
-  button:hover, .btn:hover { background: #1d4ed8; text-decoration: none; }
+  pre { background: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #e5e7eb; font-size: 14px; line-height: 1.45; }
+  textarea, input[type=text], input[type=password] { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 8px; font-family: inherit; -webkit-appearance: none; }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 320px; font-size: 14px; }
+  button, .btn { background: #2563eb; color: white; border: none; padding: 12px 18px; border-radius: 8px; cursor: pointer; font-size: 16px; display: inline-block; text-align: center; min-height: 44px; line-height: 1.2; font-family: inherit; }
+  @media (hover: hover) { button:hover, .btn:hover { background: #1d4ed8; text-decoration: none; } }
   .btn-danger { background: #dc2626; }
-  .btn-danger:hover { background: #b91c1c; }
   .btn-secondary { background: #6b7280; }
-  .btn-secondary:hover { background: #4b5563; }
-  .actions { margin: 16px 0; display: flex; gap: 8px; }
-  .field { margin: 12px 0; }
-  .field label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 4px; }
+  .actions { margin: 16px 0; display: flex; gap: 10px; flex-wrap: wrap; }
+  .actions > * { flex: 1 1 auto; min-width: 120px; }
+  .field { margin: 14px 0; }
+  .field label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 6px; }
   .error { color: #dc2626; margin: 8px 0; }
-  form.inline { display: inline; }
+  form.inline { display: inline; flex: 1 1 auto; }
+  @media (max-width: 600px) {
+    body { margin: 12px auto; padding: 0 12px; }
+    header h1 { font-size: 18px; }
+    .ns { padding: 12px; }
+  }
 `
 
-const chromeStart = `<!DOCTYPE html><html><head><title>go-brain</title><style>` + uiCSS + `</style></head><body>
+const chromeStart = `<!DOCTYPE html><html><head><title>go-brain</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<style>` + uiCSS + `</style></head><body>
 <header><h1><a href="/ui/">go-brain</a></h1><nav><a href="/ui/new">+ New</a> <a href="/ui/logout">Logout</a></nav></header>
 `
 const chromeEnd = `</body></html>`
 
 const uiTemplateSrc = `
-{{define "login"}}<!DOCTYPE html><html><head><title>go-brain — Login</title><style>
-  body { font-family: -apple-system, sans-serif; max-width: 360px; margin: 100px auto; padding: 20px; }
-  input { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; font-size: 16px; border: 1px solid #d1d5db; border-radius: 6px; }
-  button { width: 100%; padding: 10px; background: #2563eb; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+{{define "login"}}<!DOCTYPE html><html><head><title>go-brain — Login</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 360px; margin: 80px auto; padding: 20px; color: #1f2937; }
+  h2 { margin: 0 0 16px; }
+  input { width: 100%; padding: 12px; margin: 8px 0; font-size: 16px; border: 1px solid #d1d5db; border-radius: 8px; -webkit-appearance: none; }
+  button { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; min-height: 44px; font-family: inherit; }
   .error { color: #dc2626; margin: 8px 0; }
 </style></head><body>
 <h2>go-brain</h2>
