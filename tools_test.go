@@ -93,17 +93,70 @@ func TestMoveTool_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteTool(t *testing.T) {
+func TestMoveManyTool_ArchivesAFolder(t *testing.T) {
 	s := setupStore(t)
-	_ = s.Write("ns", "folder/x.md", "y")
-	_, isErr := runTool(s, "delete", map[string]any{
-		"namespace": "ns",
-		"filename":  "folder/x.md",
+	_ = s.Write("brain", "journal/may-22.md", "one")
+	_ = s.Write("brain", "journal/may-23.md", "two")
+	_ = s.Write("brain", "state.md", "untouched")
+	res, isErr := runTool(s, "move_many", map[string]any{
+		"moves": []any{
+			map[string]any{
+				"namespace":    "brain",
+				"filename":     "journal/may-22.md",
+				"new_filename": "archive/journal/may-22.md",
+			},
+			map[string]any{
+				"namespace":    "brain",
+				"filename":     "journal/may-23.md",
+				"new_filename": "archive/journal/may-23.md",
+			},
+		},
 	})
 	if isErr {
-		t.Fatal("delete returned error")
+		t.Fatalf("move_many returned error: %v", res)
 	}
-	if _, _, err := s.Read("ns", "folder/x.md"); err != ErrNotFound {
-		t.Fatalf("expected gone, got %v", err)
+	for _, name := range []string{"archive/journal/may-22.md", "archive/journal/may-23.md"} {
+		if _, _, err := s.Read("brain", name); err != nil {
+			t.Fatalf("missing destination %s: %v", name, err)
+		}
+	}
+	if _, _, err := s.Read("brain", "journal/may-22.md"); err != ErrNotFound {
+		t.Fatalf("expected source gone, got %v", err)
+	}
+	if c, _, _ := s.Read("brain", "state.md"); c != "untouched" {
+		t.Fatalf("unrelated file changed: %q", c)
+	}
+}
+
+func TestMoveManyTool_RollsBackOnFailure(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "a.md", "A")
+	_ = s.Write("ns", "b.md", "B")
+	_ = s.Write("ns", "occupied.md", "X")
+	_, isErr := runTool(s, "move_many", map[string]any{
+		"moves": []any{
+			map[string]any{"namespace": "ns", "filename": "a.md", "new_filename": "archive/a.md"},
+			map[string]any{"namespace": "ns", "filename": "b.md", "new_filename": "occupied.md"},
+		},
+	})
+	if !isErr {
+		t.Fatal("expected error from move_many")
+	}
+	if c, _, _ := s.Read("ns", "a.md"); c != "A" {
+		t.Fatalf("first move not rolled back, a.md content: %q", c)
+	}
+	if _, _, err := s.Read("ns", "archive/a.md"); err != ErrNotFound {
+		t.Fatal("expected archive/a.md to not exist after rollback")
+	}
+	if c, _, _ := s.Read("ns", "occupied.md"); c != "X" {
+		t.Fatalf("destination clobbered: %q", c)
+	}
+}
+
+func TestMoveManyTool_EmptyArray(t *testing.T) {
+	s := setupStore(t)
+	res, isErr := runTool(s, "move_many", map[string]any{"moves": []any{}})
+	if isErr {
+		t.Fatalf("empty moves should be a no-op, got: %v", res)
 	}
 }
