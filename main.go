@@ -329,6 +329,7 @@ func main() {
 	mux.HandleFunc("POST /oauth/authorize", handleAuthorizePost)
 	mux.HandleFunc("POST /oauth/token", handleToken)
 	mux.HandleFunc("POST /mcp", auth(handleMCP))
+	mux.HandleFunc("POST /", auth(handleMCP))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "server": "go-brain"})
 	})
