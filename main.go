@@ -13,6 +13,8 @@ import (
 	"sync"
 )
 
+var dbPath string
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 var (
@@ -27,6 +29,10 @@ func init() {
 	port = os.Getenv("PORT")
 	if port == "" {
 		port = "3049"
+	}
+	dbPath = os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/opt/go-brain/brain.db"
 	}
 }
 
@@ -249,16 +255,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 
 // ── MCP endpoint ──────────────────────────────────────────────────────────────
 
-var mcpTools = []map[string]any{
-	{
-		"name":        "ping",
-		"description": "Check connectivity to go-brain",
-		"inputSchema": map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
-}
+var store Store
 
 type rpcRequest struct {
 	JSONRPC string         `json:"jsonrpc"`
@@ -296,17 +293,12 @@ func handleMCP(w http.ResponseWriter, r *http.Request) {
 		respond(map[string]any{"tools": mcpTools})
 	case "tools/call":
 		name, _ := req.Params["name"].(string)
-		if name != "ping" {
-			respond(map[string]any{
-				"content": []map[string]any{{"type": "text", "text": fmt.Sprintf(`{"error":"unknown tool: %s"}`, name)}},
-				"isError": true,
-			})
-			return
-		}
-		result, _ := json.Marshal(map[string]bool{"pong": true})
+		args, _ := req.Params["arguments"].(map[string]any)
+		result, isError := runTool(store, name, args)
+		raw, _ := json.Marshal(result)
 		respond(map[string]any{
-			"content": []map[string]any{{"type": "text", "text": string(result)}},
-			"isError": false,
+			"content": []map[string]any{{"type": "text", "text": string(raw)}},
+			"isError": isError,
 		})
 	case "ping":
 		respond(map[string]any{})
@@ -321,6 +313,13 @@ func main() {
 	if secretKey != "" {
 		addToken(secretKey)
 	}
+
+	var err error
+	store, err = NewSQLiteStore(dbPath)
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+	log.Printf("database: %s", dbPath)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", handleMeta)

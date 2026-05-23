@@ -1,3 +1,5 @@
 module github.com/jacobzirbel/go-brain
 
 go 1.22
+
+require github.com/mattn/go-sqlite3 v1.14.44 // indirect
