@@ -20,6 +20,7 @@ type Store interface {
 	Write(namespace, filename, content string) error
 	Append(namespace, filename, content string) error
 	Delete(namespace, filename string) error
+	Move(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
 	List(namespace string) ([]FileEntry, error)
 	ListNamespaces() ([]string, error)
 	CreateSession(token string) error
@@ -112,6 +113,43 @@ func (s *SQLiteStore) Append(namespace, filename, content string) error {
 			updated_at = datetime('now')
 	`, namespace, filename, content)
 	return err
+}
+
+var ErrDestinationExists = errors.New("destination already exists")
+
+func (s *SQLiteStore) Move(srcNS, srcName, dstNS, dstName string) error {
+	if srcNS == dstNS && srcName == dstName {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM entries WHERE namespace=? AND filename=?`, dstNS, dstName).Scan(&exists)
+	if err == nil {
+		return ErrDestinationExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := tx.Exec(
+		`UPDATE entries SET namespace=?, filename=?, updated_at=datetime('now')
+		 WHERE namespace=? AND filename=?`,
+		dstNS, dstName, srcNS, srcName,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) Delete(namespace, filename string) error {
