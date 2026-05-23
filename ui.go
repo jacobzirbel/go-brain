@@ -261,8 +261,9 @@ const uiTemplateSrc = `
 <div class="ns">
   <h3>{{.Namespace}} <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a></h3>
   <ul>
+    {{$ns := .Namespace}}
     {{range .Files}}
-    <li><a href="/ui/file?ns={{$.Namespace | urlquery}}&name={{.Filename | urlquery}}">{{.Filename}}</a> <span class="meta">— {{.UpdatedAt}}</span></li>
+    <li><a href="/ui/file?ns={{$ns | urlquery}}&name={{.Filename | urlquery}}">{{.Filename}}</a> <span class="meta">— {{.UpdatedAt}}</span></li>
     {{end}}
   </ul>
 </div>
