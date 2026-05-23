@@ -79,6 +79,24 @@ func auth(next http.HandlerFunc) http.HandlerFunc {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func logMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		log.Printf("%s %s %d", r.Method, r.URL.Path, rec.status)
+	})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -318,5 +336,5 @@ func main() {
 	addr := ":" + port
 	log.Printf("go-brain listening on %s", addr)
 	log.Printf("OAuth endpoint: %s/oauth/authorize", baseURL)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	log.Fatal(http.ListenAndServe(addr, logMiddleware(mux)))
 }
