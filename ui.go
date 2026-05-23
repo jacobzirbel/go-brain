@@ -1,13 +1,33 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"html/template"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer/html"
 )
+
+var markdown = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	goldmark.WithRendererOptions(html.WithHardWraps()),
+)
+
+func renderMarkdown(src string) (template.HTML, error) {
+	var buf bytes.Buffer
+	if err := markdown.Convert([]byte(src), &buf); err != nil {
+		return "", err
+	}
+	return template.HTML(buf.String()), nil
+}
 
 const sessionCookieName = "gobrain_session"
 
@@ -153,13 +173,22 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	renderUI(w, "file", map[string]any{
+	data := map[string]any{
 		"Namespace": ns,
 		"Filename":  name,
 		"Content":   content,
 		"UpdatedAt": updatedAt,
 		"Size":      len(content),
-	})
+	}
+	if strings.HasSuffix(strings.ToLower(name), ".md") {
+		rendered, err := renderMarkdown(content)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		data["Rendered"] = rendered
+	}
+	renderUI(w, "file", data)
 }
 
 func handleUIEditGet(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +299,26 @@ const uiCSS = `
   .field label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 6px; }
   .error { color: #dc2626; margin: 8px 0; }
   form.inline { display: inline; flex: 1 1 auto; }
+  .md { line-height: 1.6; word-wrap: break-word; }
+  .md h1 { font-size: 26px; margin: 24px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
+  .md h2 { font-size: 22px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb; }
+  .md h3 { font-size: 18px; margin: 20px 0 8px; }
+  .md h4, .md h5, .md h6 { font-size: 16px; margin: 16px 0 8px; }
+  .md p { margin: 0 0 12px; }
+  .md ul, .md ol { margin: 0 0 12px; padding-left: 28px; }
+  .md li { margin: 4px 0; }
+  .md li > p { margin: 0; }
+  .md code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+  .md pre { background: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; border: 1px solid #e5e7eb; }
+  .md pre code { background: transparent; padding: 0; font-size: 13px; }
+  .md blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 4px solid #d1d5db; color: #4b5563; }
+  .md blockquote > :last-child { margin-bottom: 0; }
+  .md table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+  .md table th, .md table td { border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
+  .md table th { background: #f9fafb; }
+  .md hr { border: none; border-top: 1px solid #e5e7eb; margin: 20px 0; }
+  .md img { max-width: 100%; height: auto; border-radius: 6px; }
+  .md input[type=checkbox] { margin-right: 6px; }
   @media (max-width: 600px) {
     body { margin: 12px auto; padding: 0 12px; }
     header h1 { font-size: 18px; }
@@ -329,7 +378,7 @@ const uiTemplateSrc = `
     <button type="submit" class="btn-danger">Delete</button>
   </form>
 </div>
-<pre>{{.Content}}</pre>
+{{if .Rendered}}<div class="md">{{.Rendered}}</div>{{else}}<pre>{{.Content}}</pre>{{end}}
 ` + chromeEnd + `{{end}}
 
 {{define "edit"}}` + chromeStart + `
