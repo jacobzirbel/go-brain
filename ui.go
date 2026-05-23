@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -54,7 +55,26 @@ func uiAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-var uiTemplates = template.Must(template.New("ui").Parse(uiTemplateSrc))
+var uiFuncs = template.FuncMap{
+	"tokens": func(n int) string { return formatThousands(n / 4) },
+}
+
+func formatThousands(n int) string {
+	s := strconv.Itoa(n)
+	if n < 1000 {
+		return s
+	}
+	out := make([]byte, 0, len(s)+len(s)/3)
+	for i := 0; i < len(s); i++ {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
+}
+
+var uiTemplates = template.Must(template.New("ui").Funcs(uiFuncs).Parse(uiTemplateSrc))
 
 func renderUI(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -91,6 +111,7 @@ func handleUILogout(w http.ResponseWriter, r *http.Request) {
 type namespaceGroup struct {
 	Namespace string
 	Files     []FileEntry
+	TotalSize int
 }
 
 func handleUIHome(w http.ResponseWriter, r *http.Request) {
@@ -100,15 +121,21 @@ func handleUIHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	groups := make([]namespaceGroup, 0, len(namespaces))
+	grandTotal := 0
 	for _, ns := range namespaces {
 		files, err := store.List(ns)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		groups = append(groups, namespaceGroup{Namespace: ns, Files: files})
+		total := 0
+		for _, f := range files {
+			total += f.Size
+		}
+		grandTotal += total
+		groups = append(groups, namespaceGroup{Namespace: ns, Files: files, TotalSize: total})
 	}
-	renderUI(w, "home", map[string]any{"Groups": groups})
+	renderUI(w, "home", map[string]any{"Groups": groups, "GrandTotal": grandTotal})
 }
 
 func handleUIFile(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +155,7 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 		"Filename":  name,
 		"Content":   content,
 		"UpdatedAt": updatedAt,
+		"Size":      len(content),
 	})
 }
 
@@ -257,13 +285,14 @@ const uiTemplateSrc = `
 
 {{define "home"}}` + chromeStart + `
 {{if not .Groups}}<p class="meta">No files yet. <a href="/ui/new">Create one.</a></p>{{end}}
+{{if .Groups}}<p class="meta">≈ {{tokens .GrandTotal}} tokens total</p>{{end}}
 {{range .Groups}}
 <div class="ns">
-  <h3>{{.Namespace}} <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a></h3>
+  <h3>{{.Namespace}} <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span> <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a></h3>
   <ul>
     {{$ns := .Namespace}}
     {{range .Files}}
-    <li><a href="/ui/file?ns={{$ns | urlquery}}&name={{.Filename | urlquery}}">{{.Filename}}</a> <span class="meta">— {{.UpdatedAt}}</span></li>
+    <li><a href="/ui/file?ns={{$ns | urlquery}}&name={{.Filename | urlquery}}">{{.Filename}}</a> <span class="meta">— {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens</span></li>
     {{end}}
   </ul>
 </div>
@@ -272,7 +301,7 @@ const uiTemplateSrc = `
 
 {{define "file"}}` + chromeStart + `
 <p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong></p>
-<p class="meta">Updated {{.UpdatedAt}}</p>
+<p class="meta">Updated {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens</p>
 <div class="actions">
   <a class="btn" href="/ui/edit?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">Edit</a>
   <form class="inline" method="POST" action="/ui/delete?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}" onsubmit="return confirm('Delete {{.Filename}}?')">
