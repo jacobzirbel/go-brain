@@ -18,14 +18,16 @@ var dbPath string
 // ── Config ────────────────────────────────────────────────────────────────────
 
 var (
-	secretKey string
-	baseURL   string
-	port      string
+	secretKey         string
+	baseURL           string
+	port              string
+	frontendPassword  string
 )
 
 func init() {
 	secretKey = os.Getenv("SECRET_KEY")
 	baseURL = os.Getenv("BASE_URL")
+	frontendPassword = os.Getenv("FRONTEND_PASSWORD")
 	port = os.Getenv("PORT")
 	if port == "" {
 		port = "3049"
@@ -332,6 +334,8 @@ func main() {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "server": "go-brain"})
 	})
+
+	registerUIRoutes(mux)
 
 	addr := ":" + port
 	log.Printf("go-brain listening on %s", addr)

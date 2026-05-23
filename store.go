@@ -18,7 +18,9 @@ type Store interface {
 	Read(namespace, filename string) (content, updatedAt string, err error)
 	Write(namespace, filename, content string) error
 	Append(namespace, filename, content string) error
+	Delete(namespace, filename string) error
 	List(namespace string) ([]FileEntry, error)
+	ListNamespaces() ([]string, error)
 }
 
 type SQLiteStore struct {
@@ -77,6 +79,41 @@ func (s *SQLiteStore) Append(namespace, filename, content string) error {
 			updated_at = datetime('now')
 	`, namespace, filename, content)
 	return err
+}
+
+func (s *SQLiteStore) Delete(namespace, filename string) error {
+	res, err := s.db.Exec(
+		`DELETE FROM entries WHERE namespace=? AND filename=?`,
+		namespace, filename,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListNamespaces() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT namespace FROM entries ORDER BY namespace`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLiteStore) List(namespace string) ([]FileEntry, error) {
