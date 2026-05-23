@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -77,6 +78,9 @@ func uiAuth(next http.HandlerFunc) http.HandlerFunc {
 
 var uiFuncs = template.FuncMap{
 	"tokens": func(n int) string { return formatThousands(n / 4) },
+	"nodeCtx": func(ns string, n *treeNode) map[string]any {
+		return map[string]any{"NS": ns, "Node": n}
+	},
 }
 
 func formatThousands(n int) string {
@@ -131,9 +135,81 @@ func handleUILogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/login", http.StatusFound)
 }
 
+type treeNode struct {
+	Name     string
+	FullPath string
+	IsFile   bool
+	File     FileEntry
+	Children []*treeNode
+	Size     int
+}
+
+func buildTree(files []FileEntry) *treeNode {
+	root := &treeNode{}
+	for _, f := range files {
+		parts := splitPath(f.Filename)
+		node := root
+		for i, p := range parts {
+			child := findChild(node, p)
+			if child == nil {
+				child = &treeNode{
+					Name:     p,
+					FullPath: strings.Join(parts[:i+1], "/"),
+				}
+				node.Children = append(node.Children, child)
+			}
+			node = child
+		}
+		node.IsFile = true
+		node.File = f
+		node.Size = f.Size
+	}
+	rollupAndSort(root)
+	return root
+}
+
+func splitPath(s string) []string {
+	parts := strings.Split(s, "/")
+	out := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return []string{s}
+	}
+	return out
+}
+
+func findChild(n *treeNode, name string) *treeNode {
+	for _, c := range n.Children {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func rollupAndSort(n *treeNode) {
+	for _, c := range n.Children {
+		rollupAndSort(c)
+		if !n.IsFile {
+			n.Size += c.Size
+		}
+	}
+	sort.Slice(n.Children, func(i, j int) bool {
+		a, b := n.Children[i], n.Children[j]
+		if a.IsFile != b.IsFile {
+			return !a.IsFile
+		}
+		return a.Name < b.Name
+	})
+}
+
 type namespaceGroup struct {
 	Namespace string
-	Files     []FileEntry
+	Tree      *treeNode
 	TotalSize int
 }
 
@@ -151,12 +227,9 @@ func handleUIHome(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		total := 0
-		for _, f := range files {
-			total += f.Size
-		}
-		grandTotal += total
-		groups = append(groups, namespaceGroup{Namespace: ns, Files: files, TotalSize: total})
+		tree := buildTree(files)
+		grandTotal += tree.Size
+		groups = append(groups, namespaceGroup{Namespace: ns, Tree: tree, TotalSize: tree.Size})
 	}
 	renderUI(w, "home", map[string]any{"Groups": groups, "GrandTotal": grandTotal})
 }
@@ -299,6 +372,15 @@ const uiCSS = `
   .field label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 6px; }
   .error { color: #dc2626; margin: 8px 0; }
   form.inline { display: inline; flex: 1 1 auto; }
+  ul.tree { list-style: none; margin: 0; padding: 0; }
+  ul.tree ul.tree { padding-left: 18px; border-left: 1px solid #e5e7eb; margin-left: 4px; }
+  ul.tree li { padding: 6px 0; border-top: 1px solid #eef0f2; line-height: 1.4; }
+  ul.tree li:first-child { border-top: none; }
+  ul.tree details > summary { cursor: pointer; list-style: none; padding: 2px 0; }
+  ul.tree details > summary::-webkit-details-marker { display: none; }
+  ul.tree details > summary::before { content: "▸"; display: inline-block; width: 1em; color: #9ca3af; transition: transform 0.1s; }
+  ul.tree details[open] > summary::before { transform: rotate(90deg); }
+  ul.tree .folder { font-weight: 600; }
   .md { line-height: 1.6; word-wrap: break-word; }
   .md h1 { font-size: 26px; margin: 24px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
   .md h2 { font-size: 22px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb; }
@@ -359,15 +441,26 @@ const uiTemplateSrc = `
 {{range .Groups}}
 <div class="ns">
   <h3>{{.Namespace}} <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span> <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a></h3>
-  <ul>
-    {{$ns := .Namespace}}
-    {{range .Files}}
-    <li><a href="/ui/file?ns={{$ns | urlquery}}&name={{.Filename | urlquery}}">{{.Filename}}</a> <span class="meta">— {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens</span></li>
-    {{end}}
-  </ul>
+  {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
 </div>
 {{end}}
 ` + chromeEnd + `{{end}}
+
+{{define "treeChildren"}}{{$ns := .NS}}<ul class="tree">
+  {{range .Node.Children}}
+  <li>
+    {{if .IsFile}}
+    <a href="/ui/file?ns={{$ns | urlquery}}&name={{.FullPath | urlquery}}">{{.Name}}</a>
+    <span class="meta">— {{.File.UpdatedAt}} · ≈ {{tokens .Size}} tokens</span>
+    {{else}}
+    <details open>
+      <summary><span class="folder">{{.Name}}/</span> <span class="meta">≈ {{tokens .Size}} tokens</span></summary>
+      {{template "treeChildren" (nodeCtx $ns .)}}
+    </details>
+    {{end}}
+  </li>
+  {{end}}
+</ul>{{end}}
 
 {{define "file"}}` + chromeStart + `
 <p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong></p>

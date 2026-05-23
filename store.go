@@ -15,11 +15,20 @@ type FileEntry struct {
 	Size      int    `json:"size"`
 }
 
+type MoveOp struct {
+	SrcNamespace string
+	SrcFilename  string
+	DstNamespace string
+	DstFilename  string
+}
+
 type Store interface {
 	Read(namespace, filename string) (content, updatedAt string, err error)
 	Write(namespace, filename, content string) error
 	Append(namespace, filename, content string) error
 	Delete(namespace, filename string) error
+	Move(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
+	MoveMany(ops []MoveOp) error
 	List(namespace string) ([]FileEntry, error)
 	ListNamespaces() ([]string, error)
 	CreateSession(token string) error
@@ -112,6 +121,62 @@ func (s *SQLiteStore) Append(namespace, filename, content string) error {
 			updated_at = datetime('now')
 	`, namespace, filename, content)
 	return err
+}
+
+var ErrDestinationExists = errors.New("destination already exists")
+
+func moveInTx(tx *sql.Tx, op MoveOp) error {
+	if op.SrcNamespace == op.DstNamespace && op.SrcFilename == op.DstFilename {
+		return nil
+	}
+	var exists int
+	err := tx.QueryRow(
+		`SELECT 1 FROM entries WHERE namespace=? AND filename=?`,
+		op.DstNamespace, op.DstFilename,
+	).Scan(&exists)
+	if err == nil {
+		return ErrDestinationExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := tx.Exec(
+		`UPDATE entries SET namespace=?, filename=?, updated_at=datetime('now')
+		 WHERE namespace=? AND filename=?`,
+		op.DstNamespace, op.DstFilename, op.SrcNamespace, op.SrcFilename,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) Move(srcNS, srcName, dstNS, dstName string) error {
+	return s.MoveMany([]MoveOp{{srcNS, srcName, dstNS, dstName}})
+}
+
+func (s *SQLiteStore) MoveMany(ops []MoveOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, op := range ops {
+		if err := moveInTx(tx, op); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) Delete(namespace, filename string) error {
