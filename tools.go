@@ -84,6 +84,18 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "archive",
+		"description": "Archive a file by moving it under the archived/ prefix.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+				"filename":  map[string]any{"type": "string"},
+			},
+			"required": []string{"namespace", "filename"},
+		},
+	},
+	{
 		"name":        "remove",
 		"description": "rm - Remove a file.",
 		"inputSchema": map[string]any{
@@ -179,10 +191,26 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		tree := buildTree(files)
 		return map[string]string{"tree": strings.TrimRight(renderTreeString(tree, "", true), "\n")}, false
 
+	case "archive":
+		srcNS := str("namespace")
+		srcFile := str("filename")
+		dstFile := "archived/" + srcFile
+		err := store.Move(srcNS, srcFile, srcNS, dstFile)
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "not found"}, true
+		}
+		if errors.Is(err, ErrDestinationExists) {
+			return map[string]string{"error": "destination already exists"}, true
+		}
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]bool{"ok": true}, false
+
 	case "remove":
 		srcNS := str("namespace")
 		srcFile := str("filename")
-		dstFile := "archive/" + srcFile
+		dstFile := "deleted/" + srcFile
 		err := store.Move(srcNS, srcFile, srcNS, dstFile)
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
