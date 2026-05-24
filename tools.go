@@ -11,7 +11,7 @@ const filenameDescription = "Name of the file. Slashes create folders for displa
 var mcpTools = []map[string]any{
 	{
 		"name":        "read",
-		"description": "Get the contents of a file in a namespace",
+		"description": "cat <filename> — get the contents of a file in a namespace",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -49,7 +49,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "list",
-		"description": "List files in a namespace. Filenames may contain slashes to indicate folders.",
+		"description": "ls - List files in a namespace. Filenames may contain slashes to indicate folders.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -60,7 +60,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "tree",
-		"description": "Return the folder structure of a namespace as a readable tree. Slashes in filenames are treated as folder separators.",
+		"description": "tree - Return the folder structure of a namespace as a readable tree. Slashes in filenames are treated as folder separators.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -70,8 +70,34 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "copy",
+		"description": "cp - Copy a file. If new_filename ends with '/', the source basename is appended (e.g. src=\"a/b.md\", new_filename=\"archive/\" → \"archive/b.md\"). Fails if the destination already exists.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
+				"filename":      map[string]any{"type": "string", "description": "Source filename"},
+				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source namespace if omitted)"},
+				"new_filename":  map[string]any{"type": "string", "description": "Destination filename. Append '/' to copy into a folder using the source basename."},
+			},
+			"required": []string{"namespace", "filename", "new_filename"},
+		},
+	},
+	{
+		"name":        "remove",
+		"description": "rm - Remove a file.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+				"filename":  map[string]any{"type": "string"},
+			},
+			"required": []string{"namespace", "filename"},
+		},
+	},
+	{
 		"name":        "move",
-		"description": "Rename or move a file. The destination can be in a different namespace and/or a different folder (use slashes in the filename to change folders). Fails if the destination already exists. To archive a file, move it under an \"archive/\" prefix.",
+		"description": "mv - Rename or move a file. The destination can be in a different namespace and/or a different folder (use slashes in the filename to change folders). Fails if the destination already exists.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -85,7 +111,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "move_many",
-		"description": "Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back. Useful for archiving a folder: list the namespace, then move each matching file to an \"archive/\" prefix.",
+		"description": "mv (batch) - Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -152,6 +178,52 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		tree := buildTree(files)
 		return map[string]string{"tree": strings.TrimRight(renderTreeString(tree, "", true), "\n")}, false
+
+	case "remove":
+		srcNS := str("namespace")
+		srcFile := str("filename")
+		dstFile := "archive/" + srcFile
+		err := store.Move(srcNS, srcFile, srcNS, dstFile)
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "not found"}, true
+		}
+		if errors.Is(err, ErrDestinationExists) {
+			return map[string]string{"error": "destination already exists"}, true
+		}
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]bool{"ok": true}, false
+
+	case "copy":
+		srcNS := str("namespace")
+		dstNS := str("new_namespace")
+		if dstNS == "" {
+			dstNS = srcNS
+		}
+		dstFile := str("new_filename")
+		if strings.HasSuffix(dstFile, "/") {
+			parts := strings.Split(str("filename"), "/")
+			dstFile += parts[len(parts)-1]
+		}
+		content, _, err := store.Read(srcNS, str("filename"))
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "source not found"}, true
+		}
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		_, _, existErr := store.Read(dstNS, dstFile)
+		if existErr == nil {
+			return map[string]string{"error": "destination already exists"}, true
+		}
+		if !errors.Is(existErr, ErrNotFound) {
+			return map[string]string{"error": existErr.Error()}, true
+		}
+		if err := store.Write(dstNS, dstFile, content); err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]bool{"ok": true}, false
 
 	case "move":
 		dstNS := str("new_namespace")
