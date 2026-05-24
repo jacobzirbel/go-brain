@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const filenameDescription = "Name of the file. Slashes create folders for display purposes, e.g. \"journal/2026-05-23.md\" or \"projects/website/notes.md\"."
@@ -49,6 +50,17 @@ var mcpTools = []map[string]any{
 	{
 		"name":        "list",
 		"description": "List files in a namespace. Filenames may contain slashes to indicate folders.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+			},
+			"required": []string{"namespace"},
+		},
+	},
+	{
+		"name":        "tree",
+		"description": "Return the folder structure of a namespace as a readable tree. Slashes in filenames are treated as folder separators.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -133,6 +145,14 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		return map[string]any{"files": files}, false
 
+	case "tree":
+		files, err := store.List(str("namespace"))
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		tree := buildTree(files)
+		return map[string]string{"tree": strings.TrimRight(renderTreeString(tree, "", true), "\n")}, false
+
 	case "move":
 		dstNS := str("new_namespace")
 		if dstNS == "" {
@@ -189,4 +209,33 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 	default:
 		return map[string]string{"error": fmt.Sprintf("unknown tool: %s", name)}, true
 	}
+}
+
+func renderTreeString(node *treeNode, prefix string, isRoot bool) string {
+	var sb strings.Builder
+	for i, child := range node.Children {
+		isLast := i == len(node.Children)-1
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+		if isRoot {
+			connector = ""
+		}
+		label := child.Name
+		if !child.IsFile {
+			label += "/"
+		}
+		fmt.Fprintf(&sb, "%s%s%s\n", prefix, connector, label)
+		childPrefix := prefix
+		if !isRoot {
+			if isLast {
+				childPrefix += "    "
+			} else {
+				childPrefix += "│   "
+			}
+		}
+		sb.WriteString(renderTreeString(child, childPrefix, false))
+	}
+	return sb.String()
 }
