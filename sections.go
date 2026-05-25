@@ -3,9 +3,73 @@ package main
 import (
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 )
+
+// treeDepthDefault controls how many section-tree levels `tree` emits when the
+// caller doesn't pass `depth`. 1 = `## headings only` — the daily-navigation
+// default. depth=99 restores Phase 10's "all heading levels" output.
+const treeDepthDefault = 1
+
+// keepHeadingAtDepth implements the spec's depth semantics:
+//
+//	0     → no headings
+//	1..98 → only levels 2..(depth+1)  (H1 suppressed; filename is the title)
+//	99+   → all heading levels (H1–H6)
+//
+// The asymmetric H1 treatment is intentional: by convention the filename serves
+// as the page title, so a `# Foo` heading inside the file is usually redundant.
+// At full depth (99) we restore the unfiltered view.
+func keepHeadingAtDepth(level, depth int) bool {
+	if depth <= 0 {
+		return false
+	}
+	if depth >= 99 {
+		return true
+	}
+	return level >= 2 && level <= depth+1
+}
+
+func isGlobPattern(s string) bool {
+	return strings.ContainsAny(s, "*?[")
+}
+
+// filterByGlob keeps files whose full slash-delimited filename matches the
+// doublestar pattern. Used by `list(pattern=...)`.
+func filterByGlob(files []FileEntry, pattern string) ([]FileEntry, error) {
+	out := make([]FileEntry, 0, len(files))
+	for _, f := range files {
+		match, err := doublestar.Match(pattern, f.Filename)
+		if err != nil {
+			return nil, err
+		}
+		if match {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// filterByPath scopes a tree to `path`. Detection:
+//   - contains *, ?, [ → doublestar glob match
+//   - otherwise → literal: file exact-match OR folder prefix match (filename starts with path+"/")
+//
+// Returns an empty slice (not an error) when nothing matches a glob.
+func filterByPath(files []FileEntry, path string) ([]FileEntry, error) {
+	if isGlobPattern(path) {
+		return filterByGlob(files, path)
+	}
+	prefix := strings.TrimSuffix(path, "/") + "/"
+	out := make([]FileEntry, 0, len(files))
+	for _, f := range files {
+		if f.Filename == path || strings.HasPrefix(f.Filename, prefix) {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
 
 // A section describes one markdown heading and its body span in the source.
 // Boundaries are byte-aligned to source so a returned slice matches the file
