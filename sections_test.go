@@ -284,3 +284,78 @@ func TestReadTool_SectionByHeadingText(t *testing.T) {
 		t.Errorf("expected canonical slug returned, got %q", m["section"])
 	}
 }
+
+// ── Phase 12b: slug normalization + legacy compatibility ─────────────────────
+
+func TestParseSections_TrimsTrailingDashesFromSlug(t *testing.T) {
+	// Goldmark generates "phase-0-" for "## Phase 0 ✅" — the emoji strips
+	// and the trailing space turns into a trailing dash. Phase 12b trims those.
+	src := []byte("## Phase 0 ✅\n\nshipped\n\n## Phase 1 ❌\n\nbroken\n")
+	secs := parseSections(src)
+	if len(secs) != 2 {
+		t.Fatalf("expected 2 sections, got %d", len(secs))
+	}
+	for _, s := range secs {
+		if strings.HasSuffix(s.Slug, "-") || strings.HasPrefix(s.Slug, "-") {
+			t.Errorf("slug %q has unexpected leading/trailing dash", s.Slug)
+		}
+	}
+	if secs[0].Slug != "phase-0" {
+		t.Errorf("expected first slug 'phase-0', got %q", secs[0].Slug)
+	}
+}
+
+func TestSlugifyHeading_NormalizesTrailingDashes(t *testing.T) {
+	// Heading-text fallback must match the normalized stored slug.
+	cases := map[string]string{
+		"Phase 0 ✅":     "phase-0",
+		"Phase 1 ❌":     "phase-1",
+		"-leading":       "leading",
+		"trailing-":      "trailing",
+		"-both-":         "both",
+		"-- double --":   "double",
+	}
+	for in, want := range cases {
+		if got := slugifyHeading(in); got != want {
+			t.Errorf("slugifyHeading(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestReadTool_LegacySlugWithTrailingDash(t *testing.T) {
+	// Cross-references written before Phase 12b carry slugs like "phase-0-".
+	// They must still resolve after normalization.
+	s := setupStore(t)
+	_ = s.Write("ns", "doc.md", "## Phase 0 ✅\n\nshipped\n")
+
+	res, isErr := runTool(s, "read", map[string]any{
+		"namespace": "ns",
+		"filename":  "doc.md",
+		"section":   "phase-0-",
+	})
+	if isErr {
+		t.Fatalf("legacy slug with trailing dash should resolve; got %v", res)
+	}
+	m := res.(map[string]any)
+	if m["section"].(string) != "phase-0" {
+		t.Errorf("expected canonical slug 'phase-0' returned, got %q", m["section"])
+	}
+}
+
+func TestReadTool_HeadingTextWithEmojiResolves(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "doc.md", "## Phase 0 ✅\n\nshipped\n")
+
+	res, isErr := runTool(s, "read", map[string]any{
+		"namespace": "ns",
+		"filename":  "doc.md",
+		"section":   "Phase 0 ✅",
+	})
+	if isErr {
+		t.Fatalf("emoji heading text should resolve; got %v", res)
+	}
+	m := res.(map[string]any)
+	if m["section"].(string) != "phase-0" {
+		t.Errorf("expected canonical slug 'phase-0' returned, got %q", m["section"])
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,71 @@ func TestListTool_PatternInvalid(t *testing.T) {
 	_, isErr := runTool(s, "list", map[string]any{"namespace": "ns", "pattern": "[invalid"})
 	if !isErr {
 		t.Error("expected error for malformed glob")
+	}
+}
+
+// ── Phase 11.1: archive exclusion in list ────────────────────────────────────
+
+func TestListTool_ExcludesArchiveByDefault(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "active.md", "x")
+	_ = s.Write("ns", "archive/old.md", "y")
+	_ = s.Write("ns", "archived/oldish.md", "z")
+	_ = s.Write("ns", "deleted/gone.md", "w")
+
+	res, _ := runTool(s, "list", map[string]any{"namespace": "ns"})
+	files := res.(map[string]any)["files"].([]FileEntry)
+
+	if len(files) != 1 || files[0].Filename != "active.md" {
+		t.Errorf("expected only active.md; got %v", files)
+	}
+}
+
+func TestListTool_ArchiveViaPattern(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "active.md", "x")
+	_ = s.Write("ns", "archive/old.md", "y")
+	_ = s.Write("ns", "archive/older.md", "z")
+
+	res, _ := runTool(s, "list", map[string]any{"namespace": "ns", "pattern": "archive/**"})
+	files := res.(map[string]any)["files"].([]FileEntry)
+
+	if len(files) != 2 {
+		t.Errorf("expected 2 archive files; got %d: %v", len(files), files)
+	}
+	for _, f := range files {
+		if !strings.HasPrefix(f.Filename, "archive/") {
+			t.Errorf("unexpected non-archive match: %v", f.Filename)
+		}
+	}
+}
+
+func TestListTool_ArchiveViaIncludeFlag(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "active.md", "x")
+	_ = s.Write("ns", "archive/old.md", "y")
+
+	res, _ := runTool(s, "list", map[string]any{"namespace": "ns", "include_archive": true})
+	files := res.(map[string]any)["files"].([]FileEntry)
+
+	if len(files) != 2 {
+		t.Errorf("expected 2 files with include_archive=true; got %d: %v", len(files), files)
+	}
+}
+
+func TestListTool_WildcardPatternStillExcludesArchive(t *testing.T) {
+	// A general glob like "**/*.md" should NOT pull in archive — the user
+	// hasn't explicitly targeted it.
+	s := setupStore(t)
+	_ = s.Write("ns", "active.md", "x")
+	_ = s.Write("ns", "archive/old.md", "y")
+
+	res, _ := runTool(s, "list", map[string]any{"namespace": "ns", "pattern": "**/*.md"})
+	files := res.(map[string]any)["files"].([]FileEntry)
+
+	for _, f := range files {
+		if strings.HasPrefix(f.Filename, "archive/") {
+			t.Errorf("non-archive-targeting pattern leaked archive file: %v", f.Filename)
+		}
 	}
 }

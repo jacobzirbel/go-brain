@@ -116,7 +116,12 @@ func parseSections(source []byte) []section {
 		var slug string
 		if id, ok := e.h.AttributeString("id"); ok {
 			if b, ok := id.([]byte); ok {
-				slug = string(b)
+				// Goldmark generates "phase-0-" for "## Phase 0 ✅" — emoji is
+				// stripped and the trailing space turns into a trailing dash.
+				// Trim those off so the canonical slug is "phase-0". Dedup
+				// suffixes ("-1", "-2") survive because they leave the slug
+				// not ending in a dash.
+				slug = strings.Trim(string(b), "-")
 			}
 		}
 		heading := string(e.h.Lines().Value(source))
@@ -144,16 +149,28 @@ func lineStartOf(source []byte, offset int) int {
 	return 0
 }
 
-// findSection matches by exact slug first, then by slugifying the query.
-// Returns the section if found, else the ordered list of available slugs.
+// findSection matches by exact slug first, then by dash-trim (for legacy slugs
+// written before Phase 12b normalization), then by slugifying the query as if
+// it were heading text. Returns the section if found, else the ordered list of
+// canonical slugs for the caller to retry with.
 func findSection(sections []section, query string) (*section, []string) {
 	for i := range sections {
 		if sections[i].Slug == query {
 			return &sections[i], nil
 		}
 	}
-	slug := slugifyHeading(query)
-	if slug != "" {
+	// Legacy slug compatibility: cross-references written before slug
+	// normalization may carry trailing dashes like "phase-0-". Strip and retry.
+	if trimmed := strings.Trim(query, "-"); trimmed != "" && trimmed != query {
+		for i := range sections {
+			if sections[i].Slug == trimmed {
+				return &sections[i], nil
+			}
+		}
+	}
+	// Heading-text fallback: caller may have pasted the displayed heading
+	// (which Phase 12a's tree emits) instead of the slug.
+	if slug := slugifyHeading(query); slug != "" {
 		for i := range sections {
 			if sections[i].Slug == slug {
 				return &sections[i], nil
@@ -187,8 +204,51 @@ func slugifyHeading(s string) string {
 			b.WriteByte('-')
 		}
 	}
-	return b.String()
+	// Match parseSections' slug-normalization so heading-text fallback lookups
+	// produce the same canonical form as stored slugs.
+	return strings.Trim(b.String(), "-")
 }
 
 // approxTokens matches the UI's chars/4 heuristic.
 func approxTokens(n int) int { return n / 4 }
+
+// Archive-style prefixes are excluded from default `tree` / `list` output.
+// "archive/" and "archived/" are both used in practice (the archive tool writes
+// to "archived/" but some namespaces predate that). "deleted/" is where the
+// remove tool moves files (soft-delete).
+var archivePrefixes = []string{"archive/", "archived/", "deleted/"}
+
+func isArchivePath(filename string) bool {
+	for _, p := range archivePrefixes {
+		if strings.HasPrefix(filename, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathTargetsArchive returns true if a user-supplied path/pattern is explicitly
+// scoped into an archive prefix. Used to disable archive-exclusion when the
+// caller obviously meant to see archived content.
+func pathTargetsArchive(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, p := range archivePrefixes {
+		stripped := strings.TrimSuffix(p, "/")
+		if path == p || path == stripped || strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func excludeArchive(files []FileEntry) []FileEntry {
+	out := make([]FileEntry, 0, len(files))
+	for _, f := range files {
+		if !isArchivePath(f.Filename) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
