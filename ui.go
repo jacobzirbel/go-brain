@@ -554,86 +554,141 @@ func registerUIRoutes(mux *http.ServeMux) {
 }
 
 const uiCSS = `
+  :root {
+    --bg: #ffffff;
+    --bg-panel: #f9fafb;
+    --bg-code: #f3f4f6;
+    --bg-pre: #f9fafb;
+    --text: #1f2937;
+    --text-muted: #6b7280;
+    --text-soft: #4b5563;
+    --link: #2563eb;
+    --link-hover: #1d4ed8;
+    --border: #e5e7eb;
+    --border-soft: #eef0f2;
+    --border-strong: #d1d5db;
+    --btn-bg: #2563eb;
+    --btn-text: #ffffff;
+    --btn-danger: #dc2626;
+    --btn-secondary: #6b7280;
+    --btn-success: #059669;
+    --pending: #d97706;
+    --banner-bg: #fef3c7;
+    --banner-border: #f59e0b;
+    --banner-text: #92400e;
+    --th-bg: #f9fafb;
+    --details-arrow: #9ca3af;
+    --shadow: rgba(0,0,0,0.04);
+  }
+  [data-theme="dark"] {
+    --bg: #0f172a;
+    --bg-panel: #1e293b;
+    --bg-code: #1e293b;
+    --bg-pre: #111827;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-soft: #cbd5e1;
+    --link: #60a5fa;
+    --link-hover: #93c5fd;
+    --border: #334155;
+    --border-soft: #1f2937;
+    --border-strong: #475569;
+    --btn-bg: #3b82f6;
+    --btn-text: #ffffff;
+    --btn-danger: #ef4444;
+    --btn-secondary: #64748b;
+    --btn-success: #10b981;
+    --pending: #fbbf24;
+    --banner-bg: #422006;
+    --banner-border: #b45309;
+    --banner-text: #fcd34d;
+    --th-bg: #1e293b;
+    --details-arrow: #64748b;
+    --shadow: rgba(0,0,0,0.4);
+  }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; color: #1f2937; font-size: 16px; line-height: 1.5; }
+  html { background: var(--bg); }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: none; margin: 24px 24px; padding: 0; color: var(--text); background: var(--bg); font-size: 16px; line-height: 1.5; }
   h1 { font-size: 24px; }
   h2 { font-size: 20px; }
   h1, h2, h3 { margin: 0 0 12px; }
-  a { color: #2563eb; text-decoration: none; }
+  a { color: var(--link); text-decoration: none; }
   a:active { opacity: 0.6; }
-  @media (hover: hover) { a:hover { text-decoration: underline; } }
-  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
+  @media (hover: hover) { a:hover { text-decoration: underline; color: var(--link-hover); } }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
   header h1 { font-size: 20px; }
   header nav { display: flex; gap: 12px; align-items: center; }
   header nav .inbox { display: inline-flex; align-items: center; gap: 4px; }
-  .ns { background: #f9fafb; padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid #e5e7eb; }
-  .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .theme-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 10px; min-height: 0; border-radius: 6px; font-size: 14px; cursor: pointer; line-height: 1; }
+  @media (hover: hover) { .theme-toggle:hover { background: var(--bg-panel); color: var(--text); } }
+  .ns { background: var(--bg-panel); padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid var(--border); }
+  .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ns ul { list-style: none; margin: 0; padding: 0; }
-  .ns li { padding: 10px 0; border-top: 1px solid #eef0f2; line-height: 1.4; }
+  .ns li { padding: 10px 0; border-top: 1px solid var(--border-soft); line-height: 1.4; }
   .ns li:first-child { border-top: none; }
   .ns li a { font-size: 16px; word-break: break-word; }
-  .meta { color: #6b7280; font-size: 13px; }
-  pre { background: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #e5e7eb; font-size: 14px; line-height: 1.45; }
-  textarea, input[type=text], input[type=password] { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 8px; font-family: inherit; -webkit-appearance: none; }
+  .meta { color: var(--text-muted); font-size: 13px; }
+  pre { background: var(--bg-pre); padding: 14px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); font-size: 14px; line-height: 1.45; color: var(--text); }
+  textarea, input[type=text], input[type=password] { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 8px; font-family: inherit; -webkit-appearance: none; background: var(--bg); color: var(--text); }
   textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 320px; font-size: 14px; }
-  button, .btn { background: #2563eb; color: white; border: none; padding: 12px 18px; border-radius: 8px; cursor: pointer; font-size: 16px; display: inline-block; text-align: center; min-height: 44px; line-height: 1.2; font-family: inherit; }
-  @media (hover: hover) { button:hover, .btn:hover { background: #1d4ed8; text-decoration: none; } }
-  .btn-danger { background: #dc2626; }
-  .btn-secondary { background: #6b7280; }
-  .btn-success { background: #059669; }
+  button, .btn { background: var(--btn-bg); color: var(--btn-text); border: none; padding: 12px 18px; border-radius: 8px; cursor: pointer; font-size: 16px; display: inline-block; text-align: center; min-height: 44px; line-height: 1.2; font-family: inherit; }
+  @media (hover: hover) { button:hover, .btn:hover { background: var(--link-hover); text-decoration: none; } }
+  .btn-danger { background: var(--btn-danger); }
+  .btn-secondary { background: var(--btn-secondary); }
+  .btn-success { background: var(--btn-success); }
   .actions { margin: 16px 0; display: flex; gap: 10px; flex-wrap: wrap; }
   .actions > * { flex: 1 1 auto; min-width: 120px; }
   .field { margin: 14px 0; }
-  .field label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 6px; }
-  .field-inline { display: flex; gap: 8px; align-items: center; margin: 12px 0; font-size: 14px; color: #4b5563; }
+  .field label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
+  .field-inline { display: flex; gap: 8px; align-items: center; margin: 12px 0; font-size: 14px; color: var(--text-soft); }
   .field-inline input[type=checkbox] { width: 18px; height: 18px; margin: 0; }
-  .error { color: #dc2626; margin: 8px 0; }
+  .error { color: var(--btn-danger); margin: 8px 0; }
   form.inline { display: inline; flex: 1 1 auto; }
   ul.tree { list-style: none; margin: 0; padding: 0; }
-  ul.tree ul.tree { padding-left: 18px; border-left: 1px solid #e5e7eb; margin-left: 4px; }
-  ul.tree li { padding: 6px 0; border-top: 1px solid #eef0f2; line-height: 1.4; }
+  ul.tree ul.tree { padding-left: 18px; border-left: 1px solid var(--border); margin-left: 4px; }
+  ul.tree li { padding: 6px 0; border-top: 1px solid var(--border-soft); line-height: 1.4; }
   ul.tree li:first-child { border-top: none; }
   ul.tree details > summary { cursor: pointer; list-style: none; padding: 2px 0; }
   ul.tree details > summary::-webkit-details-marker { display: none; }
-  ul.tree details > summary::before { content: "▸"; display: inline-block; width: 1em; color: #9ca3af; transition: transform 0.1s; }
+  ul.tree details > summary::before { content: "▸"; display: inline-block; width: 1em; color: var(--details-arrow); transition: transform 0.1s; }
   ul.tree details[open] > summary::before { transform: rotate(90deg); }
   ul.tree .folder { font-weight: 600; }
-  .pending-dot { color: #d97706; font-size: 14px; line-height: 1; }
-  .pending-tag { color: #d97706; font-size: 12px; font-weight: 600; }
-  .review-banner { position: sticky; top: 0; z-index: 5; background: #fef3c7; border: 1px solid #f59e0b; color: #92400e; padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .pending-dot { color: var(--pending); font-size: 14px; line-height: 1; }
+  .pending-tag { color: var(--pending); font-size: 12px; font-weight: 600; }
+  .review-banner { position: sticky; top: 0; z-index: 5; background: var(--banner-bg); border: 1px solid var(--banner-border); color: var(--banner-text); padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .review-banner strong { flex: 1 1 auto; }
   .review-banner form { display: inline; }
   .review-banner button { padding: 8px 14px; font-size: 14px; min-height: 0; }
-  .diff-toolbar { display: flex; gap: 16px; align-items: center; margin: 8px 0 4px; font-size: 13px; color: #4b5563; }
+  .diff-toolbar { display: flex; gap: 16px; align-items: center; margin: 8px 0 4px; font-size: 13px; color: var(--text-soft); }
   .diff-toolbar label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   .diff-toolbar input[type=checkbox] { width: 16px; height: 16px; margin: 0; }
-  .diff-container { border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; margin: 4px 0 12px; }
+  .diff-container { border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin: 4px 0 12px; }
   #diff { width: 100%; height: 480px; }
-  .comments { margin-top: 24px; border-top: 1px solid #e5e7eb; padding-top: 16px; }
-  .comments h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+  .comments { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .comments h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
   .comments .toggle-history { font-size: 12px; font-weight: normal; text-transform: none; letter-spacing: normal; }
-  .comment { padding: 10px 12px; margin: 8px 0; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+  .comment { padding: 10px 12px; margin: 8px 0; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
   .comment.reviewed { opacity: 0.55; }
   .comment .meta { font-size: 12px; margin-bottom: 4px; }
   .comment .body { white-space: pre-wrap; word-break: break-word; }
   .md { line-height: 1.6; word-wrap: break-word; }
-  .md h1 { font-size: 26px; margin: 24px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
-  .md h2 { font-size: 22px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb; }
+  .md h1 { font-size: 26px; margin: 24px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .md h2 { font-size: 22px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
   .md h3 { font-size: 18px; margin: 20px 0 8px; }
   .md h4, .md h5, .md h6 { font-size: 16px; margin: 16px 0 8px; }
   .md p { margin: 0 0 12px; }
   .md ul, .md ol { margin: 0 0 12px; padding-left: 28px; }
   .md li { margin: 4px 0; }
   .md li > p { margin: 0; }
-  .md code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
-  .md pre { background: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; border: 1px solid #e5e7eb; }
+  .md code { background: var(--bg-code); padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+  .md pre { background: var(--bg-pre); padding: 14px; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
   .md pre code { background: transparent; padding: 0; font-size: 13px; }
-  .md blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 4px solid #d1d5db; color: #4b5563; }
+  .md blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 4px solid var(--border-strong); color: var(--text-soft); }
   .md blockquote > :last-child { margin-bottom: 0; }
   .md table { border-collapse: collapse; margin: 12px 0; width: 100%; }
-  .md table th, .md table td { border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
-  .md table th { background: #f9fafb; }
-  .md hr { border: none; border-top: 1px solid #e5e7eb; margin: 20px 0; }
+  .md table th, .md table td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .md table th { background: var(--th-bg); }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
   .md img { max-width: 100%; height: auto; border-radius: 6px; }
   .md input[type=checkbox] { margin-right: 6px; }
   @media (max-width: 600px) {
@@ -644,10 +699,41 @@ const uiCSS = `
   }
 `
 
+// themeBootJS runs synchronously in <head> before paint so the stored theme
+// is applied before any styled content is rendered (no flash of wrong theme).
+// Also installs the global toggle + Monaco-aware setter used by the chrome
+// button and (on the file-view page) the diff editor.
+const themeBootJS = `
+(function () {
+  var saved = localStorage.getItem('gb-theme');
+  var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var theme = saved || (prefersDark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', theme);
+
+  window.gbCurrentTheme = function () {
+    return document.documentElement.getAttribute('data-theme') || 'light';
+  };
+  window.gbApplyTheme = function (t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('gb-theme', t);
+    if (window.monaco && window.monaco.editor) {
+      window.monaco.editor.setTheme(t === 'dark' ? 'vs-dark' : 'vs');
+    }
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.textContent = t === 'dark' ? '☀' : '☾';
+  };
+  window.gbToggleTheme = function () {
+    window.gbApplyTheme(window.gbCurrentTheme() === 'dark' ? 'light' : 'dark');
+  };
+})();
+`
+
 const chromeStart = `<!DOCTYPE html><html><head><title>go-brain</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
-<style>` + uiCSS + `</style></head><body>
+<meta name="color-scheme" content="light dark">
+<style>` + uiCSS + `</style>
+<script>` + themeBootJS + `</script>
+</head><body>
 {{template "chrome_header" .Chrome}}
 `
 const chromeEnd = `</body></html>`
@@ -658,20 +744,20 @@ const uiTemplateSrc = `
   <nav>
     <a class="inbox" href="/ui/inbox">Inbox{{if .InboxCount}} <span class="pending-tag">({{.InboxCount}})</span>{{end}}</a>
     <a href="/ui/new">+ New</a>
+    <button id="theme-toggle" type="button" class="theme-toggle" aria-label="Toggle theme" onclick="window.gbToggleTheme()">☾</button>
     <a href="/ui/logout">Logout</a>
   </nav>
+  <script>(function(){var b=document.getElementById('theme-toggle');if(b)b.textContent=window.gbCurrentTheme()==='dark'?'☀':'☾';})();</script>
 </header>{{end}}
 
 {{define "login"}}<!DOCTYPE html><html><head><title>go-brain — Login</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 360px; margin: 80px auto; padding: 20px; color: #1f2937; }
-  h2 { margin: 0 0 16px; }
-  input { width: 100%; padding: 12px; margin: 8px 0; font-size: 16px; border: 1px solid #d1d5db; border-radius: 8px; -webkit-appearance: none; }
-  button { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; min-height: 44px; font-family: inherit; }
-  .error { color: #dc2626; margin: 8px 0; }
-</style></head><body>
+<meta name="color-scheme" content="light dark">
+<style>` + uiCSS + `
+  body { max-width: 360px; margin: 80px auto; padding: 20px; }
+</style>
+<script>` + themeBootJS + `</script>
+</head><body>
 <h2>go-brain</h2>
 {{if .Error}}<p class="error">Invalid password.</p>{{end}}
 <form method="POST" action="/ui/login">
@@ -755,13 +841,20 @@ const uiTemplateSrc = `
     wrapBox.checked = wrap;
     sbsBox.checked  = sbs;
 
+    var initialTheme = window.gbCurrentTheme() === 'dark' ? 'vs-dark' : 'vs';
+    monaco.editor.setTheme(initialTheme);
+
     var diff = monaco.editor.createDiffEditor(document.getElementById('diff'), {
       readOnly: true,
       renderSideBySide: sbs,
+      // Without this, Monaco silently falls back to the inline view when the
+      // viewport is narrow — making the "Side-by-side" toggle look broken.
+      useInlineViewWhenSpaceIsLimited: false,
       automaticLayout: true,
       originalEditable: false,
       hideUnchangedRegions: { enabled: false },
-      wordWrap: wrap ? 'on' : 'off'
+      wordWrap: wrap ? 'on' : 'off',
+      theme: initialTheme
     });
     diff.setModel({
       original: monaco.editor.createModel(oldText, lang),
@@ -776,7 +869,12 @@ const uiTemplateSrc = `
     sbsBox.addEventListener('change', function () {
       var on = sbsBox.checked;
       localStorage.setItem('gb-diff-sbs', on ? '1' : '0');
-      diff.updateOptions({ renderSideBySide: on });
+      diff.updateOptions({
+        renderSideBySide: on,
+        useInlineViewWhenSpaceIsLimited: false
+      });
+      // Force re-layout; updateOptions doesn't always retrigger it.
+      diff.layout();
     });
   });
 </script>
