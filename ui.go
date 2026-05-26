@@ -880,7 +880,7 @@ const uiTemplateSrc = `
   <form id="form-review" method="POST" action="/ui/edit?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
     <input type="hidden" name="content" />
     <input type="hidden" name="already_reviewed" value="1" />
-    <button type="submit" class="btn-success">Review</button>
+    <button type="submit" class="btn-success">Approve</button>
   </form>
   <form id="form-reject" method="POST" action="/ui/reject?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}"
         onsubmit="return confirm('Reject pending changes? Any unsaved edits will also be discarded.')">
