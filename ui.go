@@ -946,15 +946,21 @@ const uiTemplateSrc = `
     }
     diff.getModel().modified.onDidChangeContent(refreshDirty);
 
-    // Inject current diff text into Save + Review forms at submit time.
-    ['form-save', 'form-review'].forEach(function (id) {
+    // Inject current diff text into Save + Review forms at submit time, and
+    // mark that we're submitting on purpose so beforeunload doesn't prompt.
+    var submitting = false;
+    ['form-save', 'form-review', 'form-reject'].forEach(function (id) {
       var f = document.getElementById(id);
       f.addEventListener('submit', function () {
-        f.querySelector('input[name=content]').value = currentText();
+        submitting = true;
+        var hidden = f.querySelector('input[name=content]');
+        if (hidden) hidden.value = currentText();
       });
     });
-    // Warn before nav if the user has unsaved edits.
+    // Warn before nav if the user has unsaved edits — but only for real navs,
+    // not for our own form submissions.
     window.addEventListener('beforeunload', function (e) {
+      if (submitting) return;
       if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
     });
 
