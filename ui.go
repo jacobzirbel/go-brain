@@ -297,6 +297,17 @@ func handleUIHome(w http.ResponseWriter, r *http.Request) {
 			PendingCount: tree.Pending,
 		})
 	}
+	// Pin `global` to the top regardless of alphabetical order; everything
+	// else stays in the order ListNamespaces returned (alphabetical).
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].Namespace == "global" {
+			return groups[j].Namespace != "global"
+		}
+		if groups[j].Namespace == "global" {
+			return false
+		}
+		return false
+	})
 	renderUI(w, "home", map[string]any{
 		"Groups":     groups,
 		"GrandTotal": grandTotal,
