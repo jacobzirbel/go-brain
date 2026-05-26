@@ -622,6 +622,8 @@ const uiCSS = `
   .theme-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 10px; min-height: 0; border-radius: 6px; font-size: 14px; cursor: pointer; line-height: 1; }
   @media (hover: hover) { .theme-toggle:hover { background: var(--bg-panel); color: var(--text); } }
   .ns { background: var(--bg-panel); padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid var(--border); }
+  .ns-picker { display: flex; gap: 10px; align-items: center; margin: 0 0 14px; font-size: 13px; color: var(--text-muted); }
+  .ns-picker select { background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px 10px; font-size: 14px; font-family: inherit; }
   .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ns ul { list-style: none; margin: 0; padding: 0; }
   .ns li { padding: 10px 0; border-top: 1px solid var(--border-soft); line-height: 1.4; }
@@ -769,8 +771,10 @@ const uiTemplateSrc = `
 {{define "home"}}` + chromeStart + `
 {{if not .Groups}}<p class="meta">No files yet. <a href="/ui/new">Create one.</a></p>{{end}}
 {{if .Groups}}<p class="meta">≈ {{tokens .GrandTotal}} tokens total</p>{{end}}
+
+{{/* Render every namespace; JS below shows global (always) + one other from localStorage. */}}
 {{range .Groups}}
-<div class="ns">
+<div class="ns" data-ns="{{.Namespace}}">
   <h3>
     {{.Namespace}}
     {{if .PendingCount}}<span class="pending-dot" title="{{.PendingCount}} pending">●</span>{{end}}
@@ -781,6 +785,65 @@ const uiTemplateSrc = `
   {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
 </div>
 {{end}}
+
+<div class="ns-picker" id="ns-picker" style="display:none">
+  <label for="ns-select">Other namespace:</label>
+  <select id="ns-select"></select>
+</div>
+
+<script>
+(function () {
+  var panels = Array.from(document.querySelectorAll('.ns'));
+  if (!panels.length) return;
+  var picker = document.getElementById('ns-picker');
+  var select = document.getElementById('ns-select');
+
+  var globalPanel = null;
+  var others = [];
+  panels.forEach(function (p) {
+    var name = p.getAttribute('data-ns');
+    if (name === 'global') globalPanel = p;
+    else others.push({ name: name, el: p });
+  });
+
+  // Hide every non-global panel by default; reveal one based on selection.
+  others.forEach(function (o) { o.el.style.display = 'none'; });
+
+  if (others.length === 0) return;  // only global exists — no picker needed
+
+  // Insert picker right before the first non-global panel (or at the end if global is last).
+  var anchor = globalPanel ? globalPanel.nextSibling : panels[0];
+  if (anchor) anchor.parentNode.insertBefore(picker, anchor);
+  else document.body.appendChild(picker);
+  picker.style.display = '';
+
+  // Populate dropdown.
+  others.forEach(function (o) {
+    var opt = document.createElement('option');
+    opt.value = o.name;
+    opt.textContent = o.name;
+    select.appendChild(opt);
+  });
+
+  var stored = localStorage.getItem('gb-ns');
+  var initial = stored && others.some(function (o) { return o.name === stored; })
+    ? stored
+    : others[0].name;
+  select.value = initial;
+  show(initial);
+
+  select.addEventListener('change', function () {
+    localStorage.setItem('gb-ns', select.value);
+    show(select.value);
+  });
+
+  function show(name) {
+    others.forEach(function (o) {
+      o.el.style.display = (o.name === name) ? '' : 'none';
+    });
+  }
+})();
+</script>
 ` + chromeEnd + `{{end}}
 
 {{define "treeChildren"}}{{$ns := .NS}}<ul class="tree">
