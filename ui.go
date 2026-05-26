@@ -579,6 +579,7 @@ const uiCSS = `
     --border-soft: #eef0f2;
     --border-strong: #d1d5db;
     --btn-bg: #2563eb;
+    --btn-hover: #1d4ed8;
     --btn-text: #ffffff;
     --btn-danger: #dc2626;
     --btn-secondary: #6b7280;
@@ -592,29 +593,30 @@ const uiCSS = `
     --shadow: rgba(0,0,0,0.04);
   }
   [data-theme="dark"] {
-    --bg: #0f172a;
-    --bg-panel: #1e293b;
-    --bg-code: #1e293b;
-    --bg-pre: #111827;
-    --text: #e2e8f0;
-    --text-muted: #94a3b8;
-    --text-soft: #cbd5e1;
+    --bg: #18181b;
+    --bg-panel: #27272a;
+    --bg-code: #2a2a2e;
+    --bg-pre: #1f1f22;
+    --text: #e4e4e7;
+    --text-muted: #a1a1aa;
+    --text-soft: #d4d4d8;
     --link: #60a5fa;
     --link-hover: #93c5fd;
-    --border: #334155;
-    --border-soft: #1f2937;
-    --border-strong: #475569;
-    --btn-bg: #3b82f6;
-    --btn-text: #ffffff;
-    --btn-danger: #ef4444;
-    --btn-secondary: #64748b;
-    --btn-success: #10b981;
-    --pending: #fbbf24;
-    --banner-bg: #422006;
-    --banner-border: #b45309;
-    --banner-text: #fcd34d;
-    --th-bg: #1e293b;
-    --details-arrow: #64748b;
+    --border: #3f3f46;
+    --border-soft: #27272a;
+    --border-strong: #52525b;
+    --btn-bg: #3f3f46;
+    --btn-hover: #52525b;
+    --btn-text: #f4f4f5;
+    --btn-danger: #b91c1c;
+    --btn-secondary: #52525b;
+    --btn-success: #15803d;
+    --pending: #f59e0b;
+    --banner-bg: #292524;
+    --banner-border: #78716c;
+    --banner-text: #fbbf24;
+    --th-bg: #27272a;
+    --details-arrow: #71717a;
     --shadow: rgba(0,0,0,0.4);
   }
   * { box-sizing: border-box; }
@@ -645,7 +647,7 @@ const uiCSS = `
   textarea, input[type=text], input[type=password] { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 8px; font-family: inherit; -webkit-appearance: none; background: var(--bg); color: var(--text); }
   textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 320px; font-size: 14px; }
   button, .btn { background: var(--btn-bg); color: var(--btn-text); border: none; padding: 12px 18px; border-radius: 8px; cursor: pointer; font-size: 16px; display: inline-block; text-align: center; min-height: 44px; line-height: 1.2; font-family: inherit; }
-  @media (hover: hover) { button:hover, .btn:hover { background: var(--link-hover); text-decoration: none; } }
+  @media (hover: hover) { button:hover, .btn:hover { background: var(--btn-hover); text-decoration: none; } }
   .btn-danger { background: var(--btn-danger); }
   .btn-secondary { background: var(--btn-secondary); }
   .btn-success { background: var(--btn-success); }
