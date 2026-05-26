@@ -146,6 +146,22 @@ var mcpTools = []map[string]any{
 			"required": []string{"namespace", "filename", "new_filename"},
 		},
 	},
+	{
+		"name":        "search",
+		"description": "Full-text search of file contents within a single namespace. Returns matching files with snippet previews. Query syntax is FTS5: loose keyword by default, \"double quotes\" for phrase match, AND/OR/NOT operators allowed. Also matches the file's basename (the segment after the last '/' in the filename) — folder path components are not searched. Use the path parameter for glob-scoped search (e.g. path=\"tasks/**\"). By default excludes archive/, archived/, deleted/ folders; pass include_archive=true to include them. Always scoped to the namespace argument; cannot search across namespaces.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace":       map[string]any{"type": "string", "description": "Namespace to search. Empty or \"*\" is an error — cross-namespace search is not supported."},
+				"query":           map[string]any{"type": "string", "description": "FTS5 MATCH expression. Loose keyword by default; \"phrase\" for adjacency; AND/OR/NOT for boolean."},
+				"path":            map[string]any{"type": "string", "description": "Optional doublestar glob over filename, e.g. \"tasks/**\" or \"decisions/*.md\"."},
+				"limit":           map[string]any{"type": "integer", "description": "Page size. Default 20, hard cap 100."},
+				"order":           map[string]any{"type": "string", "description": "\"bm25\" (default, relevance) or \"recency\" (updated_at DESC)."},
+				"include_archive": map[string]any{"type": "boolean", "description": "Include archive/archived/deleted prefixes. Defaults to false."},
+			},
+			"required": []string{"namespace", "query"},
+		},
+	},
 	// {
 	// 	"name":        "comments",
 	// 	"description": "List edit-changelog comments on a file (or across a namespace if filename is omitted). Returns rows newest first. Defaults to unreviewed only, 20 most recent.",
@@ -524,6 +540,29 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 			return map[string]string{"error": err.Error()}, true
 		}
 		return map[string]any{"ok": true, "moved": len(ops)}, false
+
+	case "search":
+		ns := str("namespace")
+		if ns == "" || ns == "*" {
+			return map[string]string{"error": "namespace required, cross-namespace search not supported"}, true
+		}
+		query := str("query")
+		if query == "" {
+			return map[string]string{"error": "query required"}, true
+		}
+		includeArchive, _ := args["include_archive"].(bool)
+		hits, err := store.Search(SearchOptions{
+			Namespace:      ns,
+			Query:          query,
+			Path:           str("path"),
+			Limit:          intArg(args, "limit", 20),
+			Order:          str("order"),
+			IncludeArchive: includeArchive,
+		})
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]any{"results": hits}, false
 
 	default:
 		return map[string]string{"error": fmt.Sprintf("unknown tool: %s", name)}, true

@@ -3,8 +3,11 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"log"
+	"path"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -37,6 +40,22 @@ type Comment struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type SearchOptions struct {
+	Namespace       string
+	Query           string
+	Path            string // optional doublestar glob over filename
+	Limit           int    // hard-capped at 100 by Search
+	Order           string // "bm25" (default) or "recency"
+	IncludeArchive  bool
+}
+
+type SearchHit struct {
+	Filename  string  `json:"filename"`
+	UpdatedAt string  `json:"updated_at"`
+	Snippet   string  `json:"snippet"`
+	Score     float64 `json:"score"`
+}
+
 type PendingFile struct {
 	Namespace          string `json:"namespace"`
 	Filename           string `json:"filename"`
@@ -65,6 +84,8 @@ type Store interface {
 	PendingFiles() ([]PendingFile, error)
 	GlobalPendingCount() (int, error)
 	NamespacePendingCount(namespace string) (int, error)
+
+	Search(opts SearchOptions) ([]SearchHit, error)
 
 	CreateSession(token string) error
 	HasSession(token string) (bool, error)
@@ -118,7 +139,94 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	)`); err != nil {
 		return nil, err
 	}
+	// Phase 8: FTS5 search index over entries.
+	// namespace UNINDEXED — exists only for WHERE filtering, so a search for
+	// the namespace name doesn't pollute results. basename = path.Base(filename).
+	// body = COALESCE(new, content) — Phase 6's displayed value.
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+		namespace UNINDEXED,
+		basename,
+		body,
+		tokenize = 'porter unicode61'
+	)`); err != nil {
+		return nil, err
+	}
+	if err := backfillFTSIfEmpty(db); err != nil {
+		return nil, err
+	}
 	return &SQLiteStore{db: db}, nil
+}
+
+// backfillFTSIfEmpty seeds entries_fts from entries on first boot.
+// Idempotent: a non-empty entries_fts short-circuits — sync helpers keep it
+// current after that.
+func backfillFTSIfEmpty(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM entries_fts`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	rows, err := db.Query(`SELECT rowid, namespace, filename, COALESCE(new, content) FROM entries`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO entries_fts(rowid, namespace, basename, body) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	count := 0
+	for rows.Next() {
+		var rowid int64
+		var ns, fn, body string
+		if err := rows.Scan(&rowid, &ns, &fn, &body); err != nil {
+			return err
+		}
+		if _, err := stmt.Exec(rowid, ns, path.Base(fn), body); err != nil {
+			return err
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("fts backfill: %d rows", count)
+	return nil
+}
+
+// upsertFTS replaces (or inserts) the FTS row for a given entries.rowid.
+// Delete+insert is simpler than UPDATE here and works the same way regardless
+// of whether the rowid existed previously.
+func upsertFTS(tx execer, rowid int64, namespace, filename, body string) error {
+	if _, err := tx.Exec(`DELETE FROM entries_fts WHERE rowid = ?`, rowid); err != nil {
+		return err
+	}
+	_, err := tx.Exec(
+		`INSERT INTO entries_fts(rowid, namespace, basename, body) VALUES (?, ?, ?, ?)`,
+		rowid, namespace, path.Base(filename), body,
+	)
+	return err
+}
+
+func deleteFTS(tx execer, rowid int64) error {
+	_, err := tx.Exec(`DELETE FROM entries_fts WHERE rowid = ?`, rowid)
+	return err
+}
+
+// execer abstracts over *sql.DB and *sql.Tx for the sync helpers above.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
 }
 
 // migrateEntries handles two legacy schemas:
@@ -233,22 +341,43 @@ func (s *SQLiteStore) ReadEntry(namespace, filename string) (string, sql.NullStr
 	return content, newVal, updatedAt, err
 }
 
-// Write sets entries.new = content. Leaves `old` untouched.
-// Comment rows (if any) are inserted separately via InsertComment.
+// Write sets entries.new = content. Leaves the canonical `content` untouched.
+// Wrapped in a tx so the FTS index stays in lock-step with entries.
 func (s *SQLiteStore) Write(namespace, filename, content string) error {
-	_, err := s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var rowid int64
+	var body string
+	err = tx.QueryRow(`
 		INSERT INTO entries (namespace, filename, new, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
 		ON CONFLICT(namespace, filename) DO UPDATE SET
 			new        = excluded.new,
 			updated_at = datetime('now')
-	`, namespace, filename, content)
-	return err
+		RETURNING rowid, COALESCE(new, content)
+	`, namespace, filename, content).Scan(&rowid, &body)
+	if err != nil {
+		return err
+	}
+	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Append reads COALESCE(new, content), appends, and writes the result to `new`.
 func (s *SQLiteStore) Append(namespace, filename, content string) error {
-	_, err := s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var rowid int64
+	var body string
+	err = tx.QueryRow(`
 		INSERT INTO entries (namespace, filename, new, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
 		ON CONFLICT(namespace, filename) DO UPDATE SET
@@ -258,8 +387,15 @@ func (s *SQLiteStore) Append(namespace, filename, content string) error {
 					ELSE COALESCE(entries.new, entries.content) || char(10) || excluded.new
 			END,
 			updated_at = datetime('now')
-	`, namespace, filename, content)
-	return err
+		RETURNING rowid, COALESCE(new, content)
+	`, namespace, filename, content).Scan(&rowid, &body)
+	if err != nil {
+		return err
+	}
+	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func moveInTx(tx *sql.Tx, op MoveOp) error {
@@ -277,26 +413,36 @@ func moveInTx(tx *sql.Tx, op MoveOp) error {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	res, err := tx.Exec(
+	// Capture rowid + current body before the rename — rowid persists through
+	// UPDATE, and we need both for the FTS re-emit.
+	var rowid int64
+	var body string
+	err = tx.QueryRow(
+		`SELECT rowid, COALESCE(new, content) FROM entries WHERE namespace=? AND filename=?`,
+		op.SrcNamespace, op.SrcFilename,
+	).Scan(&rowid, &body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
 		`UPDATE entries SET namespace=?, filename=?, updated_at=datetime('now')
 		 WHERE namespace=? AND filename=?`,
 		op.DstNamespace, op.DstFilename, op.SrcNamespace, op.SrcFilename,
-	)
-	if err != nil {
+	); err != nil {
 		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
 	}
 	// Comments follow the file. Same tx — partial state never visible.
 	if _, err := tx.Exec(
 		`UPDATE comments SET namespace=?, filename=? WHERE namespace=? AND filename=?`,
 		op.DstNamespace, op.DstFilename, op.SrcNamespace, op.SrcFilename,
 	); err != nil {
+		return err
+	}
+	// FTS namespace/basename may have changed; body is unchanged.
+	if err := upsertFTS(tx, rowid, op.DstNamespace, op.DstFilename, body); err != nil {
 		return err
 	}
 	return nil
@@ -339,39 +485,49 @@ func (s *SQLiteStore) Copy(srcNS, srcName, dstNS, dstName string) error {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	res, err := tx.Exec(`
+	var newRowid int64
+	var body string
+	err = tx.QueryRow(`
 		INSERT INTO entries (namespace, filename, content, new, updated_at)
 		SELECT ?, ?, content, new, datetime('now') FROM entries WHERE namespace=? AND filename=?
-	`, dstNS, dstName, srcNS, srcName)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+		RETURNING rowid, COALESCE(new, content)
+	`, dstNS, dstName, srcNS, srcName).Scan(&newRowid, &body)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := upsertFTS(tx, newRowid, dstNS, dstName, body); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
 
 func (s *SQLiteStore) Delete(namespace, filename string) error {
-	res, err := s.db.Exec(
-		`DELETE FROM entries WHERE namespace=? AND filename=?`,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var rowid int64
+	err = tx.QueryRow(
+		`SELECT rowid FROM entries WHERE namespace=? AND filename=?`,
 		namespace, filename,
-	)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	).Scan(&rowid)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM entries WHERE namespace=? AND filename=?`, namespace, filename); err != nil {
+		return err
+	}
+	if err := deleteFTS(tx, rowid); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) ListNamespaces() ([]string, error) {
@@ -485,16 +641,25 @@ func (s *SQLiteStore) Review(namespace, filename string) error {
 	if !newVal.Valid {
 		return ErrNoPending
 	}
-	if _, err := tx.Exec(
-		`UPDATE entries SET content = new, new = NULL WHERE namespace=? AND filename=?`,
+	var rowid int64
+	var body string
+	if err := tx.QueryRow(
+		`UPDATE entries SET content = new, new = NULL WHERE namespace=? AND filename=?
+		 RETURNING rowid, content`,
 		namespace, filename,
-	); err != nil {
+	).Scan(&rowid, &body); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
 		`UPDATE comments SET reviewed=1 WHERE namespace=? AND filename=? AND reviewed=0`,
 		namespace, filename,
 	); err != nil {
+		return err
+	}
+	// Body is conceptually unchanged (COALESCE(new,content) == previous new ==
+	// current content) but the column transition counts as a write — re-emit
+	// FTS to stay consistent with the rest of the sync path.
+	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -521,16 +686,23 @@ func (s *SQLiteStore) Reject(namespace, filename string) error {
 	if !newVal.Valid {
 		return ErrNoPending
 	}
-	if _, err := tx.Exec(
-		`UPDATE entries SET new = NULL WHERE namespace=? AND filename=?`,
+	var rowid int64
+	var body string
+	if err := tx.QueryRow(
+		`UPDATE entries SET new = NULL WHERE namespace=? AND filename=?
+		 RETURNING rowid, content`,
 		namespace, filename,
-	); err != nil {
+	).Scan(&rowid, &body); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
 		`UPDATE comments SET reviewed=1 WHERE namespace=? AND filename=? AND reviewed=0`,
 		namespace, filename,
 	); err != nil {
+		return err
+	}
+	// Body reverts to the canonical `content` — re-emit so search reflects it.
+	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -595,4 +767,85 @@ func (s *SQLiteStore) NamespacePendingCount(namespace string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE namespace=? AND new IS NOT NULL`, namespace).Scan(&n)
 	return n, err
+}
+
+// Search runs FTS5 MATCH against entries_fts, scoped to a single namespace.
+// The path glob (if any) is applied post-SQL via doublestar.
+func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	orderClause := `bm25(entries_fts) ASC`
+	switch opts.Order {
+	case "", "bm25":
+		// default
+	case "recency":
+		orderClause = `e.updated_at DESC`
+	default:
+		return nil, errors.New(`order must be "bm25" or "recency"`)
+	}
+
+	includeArchive := 0
+	if opts.IncludeArchive {
+		includeArchive = 1
+	}
+	// Snippet args: column 2 = body (after namespace=0, basename=1). '<' '>'
+	// as match delimiters, '…' ellipsis, 16-token window.
+	q := `
+		SELECT
+			e.filename,
+			e.updated_at,
+			snippet(entries_fts, 2, '<', '>', '…', 16) AS snippet,
+			bm25(entries_fts) AS score
+		FROM entries_fts
+		JOIN entries e ON e.rowid = entries_fts.rowid
+		WHERE entries_fts MATCH ?
+		  AND entries_fts.namespace = ?
+		  AND (? = 1 OR (
+			e.filename NOT GLOB 'archive/*'
+			AND e.filename NOT GLOB 'archived/*'
+			AND e.filename NOT GLOB 'deleted/*'
+		  ))
+		ORDER BY ` + orderClause + `
+		LIMIT ?`
+
+	// If a path glob is supplied we over-fetch from SQL and filter in Go —
+	// doublestar's pattern syntax isn't expressible in SQLite GLOB. Cap the
+	// over-fetch at the FTS5 native row budget so a pathological glob can't
+	// exhaust memory.
+	rowBudget := limit
+	if opts.Path != "" {
+		rowBudget = 500
+	}
+	rows, err := s.db.Query(q, opts.Query, opts.Namespace, includeArchive, rowBudget)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []SearchHit{}
+	for rows.Next() {
+		var h SearchHit
+		if err := rows.Scan(&h.Filename, &h.UpdatedAt, &h.Snippet, &h.Score); err != nil {
+			return nil, err
+		}
+		if opts.Path != "" {
+			match, perr := doublestar.Match(opts.Path, h.Filename)
+			if perr != nil {
+				return nil, perr
+			}
+			if !match {
+				continue
+			}
+		}
+		out = append(out, h)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, rows.Err()
 }
