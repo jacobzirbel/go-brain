@@ -604,7 +604,10 @@ const uiCSS = `
   .review-banner strong { flex: 1 1 auto; }
   .review-banner form { display: inline; }
   .review-banner button { padding: 8px 14px; font-size: 14px; min-height: 0; }
-  .diff-container { border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; margin: 12px 0; }
+  .diff-toolbar { display: flex; gap: 16px; align-items: center; margin: 8px 0 4px; font-size: 13px; color: #4b5563; }
+  .diff-toolbar label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .diff-toolbar input[type=checkbox] { width: 16px; height: 16px; margin: 0; }
+  .diff-container { border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; margin: 4px 0 12px; }
   #diff { width: 100%; height: 480px; }
   .comments { margin-top: 24px; border-top: 1px solid #e5e7eb; padding-top: 16px; }
   .comments h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
@@ -730,6 +733,10 @@ const uiTemplateSrc = `
 </div>
 <textarea id="content-left" style="display:none">{{.Content}}</textarea>
 <textarea id="content-right" style="display:none">{{.New}}</textarea>
+<div class="diff-toolbar">
+  <label><input type="checkbox" id="toggle-wrap" /> Word wrap</label>
+  <label><input type="checkbox" id="toggle-sbs" /> Side-by-side</label>
+</div>
 <div class="diff-container"><div id="diff"></div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
 <script>
@@ -738,16 +745,38 @@ const uiTemplateSrc = `
     var oldText = document.getElementById('content-left').value;
     var newText = document.getElementById('content-right').value;
     var lang = /\.md$/i.test({{.Filename}}) ? 'markdown' : 'plaintext';
+
+    // Persist toggle state across files; defaults: wrap on, inline view.
+    var wrap = localStorage.getItem('gb-diff-wrap') !== '0';
+    var sbs  = localStorage.getItem('gb-diff-sbs')  === '1';
+
+    var wrapBox = document.getElementById('toggle-wrap');
+    var sbsBox  = document.getElementById('toggle-sbs');
+    wrapBox.checked = wrap;
+    sbsBox.checked  = sbs;
+
     var diff = monaco.editor.createDiffEditor(document.getElementById('diff'), {
       readOnly: true,
-      renderSideBySide: false,
+      renderSideBySide: sbs,
       automaticLayout: true,
       originalEditable: false,
-      hideUnchangedRegions: { enabled: false }
+      hideUnchangedRegions: { enabled: false },
+      wordWrap: wrap ? 'on' : 'off'
     });
     diff.setModel({
       original: monaco.editor.createModel(oldText, lang),
       modified: monaco.editor.createModel(newText, lang)
+    });
+
+    wrapBox.addEventListener('change', function () {
+      var on = wrapBox.checked;
+      localStorage.setItem('gb-diff-wrap', on ? '1' : '0');
+      diff.updateOptions({ wordWrap: on ? 'on' : 'off' });
+    });
+    sbsBox.addEventListener('change', function () {
+      var on = sbsBox.checked;
+      localStorage.setItem('gb-diff-sbs', on ? '1' : '0');
+      diff.updateOptions({ renderSideBySide: on });
     });
   });
 </script>
