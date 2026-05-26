@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"errors"
 	"html/template"
@@ -81,6 +82,29 @@ var uiFuncs = template.FuncMap{
 	"nodeCtx": func(ns string, n *treeNode) map[string]any {
 		return map[string]any{"NS": ns, "Node": n}
 	},
+	"isArchiveFolder": func(name string) bool {
+		switch name {
+		case "archive", "archived", "deleted":
+			return true
+		}
+		return false
+	},
+	"snippet": func(s string) string {
+		s = strings.TrimSpace(s)
+		s = strings.ReplaceAll(s, "\n", " ")
+		if len(s) > 140 {
+			return s[:140] + "…"
+		}
+		return s
+	},
+	"dict": func(pairs ...any) map[string]any {
+		m := make(map[string]any, len(pairs)/2)
+		for i := 0; i+1 < len(pairs); i += 2 {
+			k, _ := pairs[i].(string)
+			m[k] = pairs[i+1]
+		}
+		return m
+	},
 }
 
 func formatThousands(n int) string {
@@ -105,6 +129,17 @@ func renderUI(w http.ResponseWriter, name string, data any) {
 	if err := uiTemplates.ExecuteTemplate(w, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// chromeData is the shared header context — currently just the global
+// inbox count. Every authed view computes it and threads it through the template.
+type chromeData struct {
+	InboxCount int
+}
+
+func chrome() chromeData {
+	n, _ := store.GlobalPendingCount()
+	return chromeData{InboxCount: n}
 }
 
 func handleUILoginGet(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +171,14 @@ func handleUILogout(w http.ResponseWriter, r *http.Request) {
 }
 
 type treeNode struct {
-	Name     string
-	FullPath string
-	IsFile   bool
-	File     FileEntry
-	Children []*treeNode
-	Size     int
+	Name         string
+	FullPath     string
+	IsFile       bool
+	File         FileEntry
+	Children     []*treeNode
+	Size         int // bytes, excluding archive subtrees
+	Pending      int // count of pending files in subtree (or 1 if leaf has pending)
+	HasPending   bool
 }
 
 func buildTree(files []FileEntry) *treeNode {
@@ -162,7 +199,7 @@ func buildTree(files []FileEntry) *treeNode {
 		}
 		node.IsFile = true
 		node.File = f
-		node.Size = f.Size
+		node.HasPending = f.HasPending
 	}
 	rollupAndSort(root)
 	return root
@@ -191,11 +228,26 @@ func findChild(n *treeNode, name string) *treeNode {
 	return nil
 }
 
+// rollupAndSort computes Size + Pending bottom-up. Archive subtrees (folders
+// named "archive", "archived", "deleted" at any level) are excluded from the
+// Size and Pending totals of their ancestors so the headline numbers reflect
+// active content only — matches Phase 11.1 tree-tool behavior.
 func rollupAndSort(n *treeNode) {
-	for _, c := range n.Children {
-		rollupAndSort(c)
-		if !n.IsFile {
+	if n.IsFile {
+		n.Size = n.File.Size
+		if n.HasPending {
+			n.Pending = 1
+		}
+	} else {
+		n.Size = 0
+		n.Pending = 0
+		for _, c := range n.Children {
+			rollupAndSort(c)
+			if isArchiveName(c.Name) {
+				continue
+			}
 			n.Size += c.Size
+			n.Pending += c.Pending
 		}
 	}
 	sort.Slice(n.Children, func(i, j int) bool {
@@ -207,10 +259,19 @@ func rollupAndSort(n *treeNode) {
 	})
 }
 
+func isArchiveName(s string) bool {
+	switch s {
+	case "archive", "archived", "deleted":
+		return true
+	}
+	return false
+}
+
 type namespaceGroup struct {
-	Namespace string
-	Tree      *treeNode
-	TotalSize int
+	Namespace    string
+	Tree         *treeNode
+	TotalSize    int
+	PendingCount int
 }
 
 func handleUIHome(w http.ResponseWriter, r *http.Request) {
@@ -229,15 +290,24 @@ func handleUIHome(w http.ResponseWriter, r *http.Request) {
 		}
 		tree := buildTree(files)
 		grandTotal += tree.Size
-		groups = append(groups, namespaceGroup{Namespace: ns, Tree: tree, TotalSize: tree.Size})
+		groups = append(groups, namespaceGroup{
+			Namespace:    ns,
+			Tree:         tree,
+			TotalSize:    tree.Size,
+			PendingCount: tree.Pending,
+		})
 	}
-	renderUI(w, "home", map[string]any{"Groups": groups, "GrandTotal": grandTotal})
+	renderUI(w, "home", map[string]any{
+		"Groups":     groups,
+		"GrandTotal": grandTotal,
+		"Chrome":     chrome(),
+	})
 }
 
 func handleUIFile(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
-	content, updatedAt, err := store.Read(ns, name)
+	content, newVal, updatedAt, err := store.ReadEntry(ns, name)
 	if errors.Is(err, ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -246,15 +316,39 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data := map[string]any{
-		"Namespace": ns,
-		"Filename":  name,
-		"Content":   content,
-		"UpdatedAt": updatedAt,
-		"Size":      len(content),
+	hasPending := newVal.Valid
+	displayed := content
+	if hasPending {
+		displayed = newVal.String
 	}
-	if strings.HasSuffix(strings.ToLower(name), ".md") {
-		rendered, err := renderMarkdown(content)
+	data := map[string]any{
+		"Namespace":  ns,
+		"Filename":   name,
+		"Content":    content,
+		"New":        "",
+		"Displayed":  displayed,
+		"UpdatedAt":  updatedAt,
+		"Size":       len(displayed),
+		"HasPending": hasPending,
+		"Chrome":     chrome(),
+	}
+	if hasPending {
+		data["New"] = newVal.String
+	}
+	// Default thread: unreviewed only, 20 most recent.
+	// `?history=1` flips the toggle on so reviewed comments render too.
+	includeHistory := r.URL.Query().Get("history") == "1"
+	comments, err := store.ListComments(ns, name, includeHistory, 20, 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data["Comments"] = comments
+	data["CommentsHaveMore"] = len(comments) == 20
+	data["IncludeHistory"] = includeHistory
+
+	if strings.HasSuffix(strings.ToLower(name), ".md") && !hasPending {
+		rendered, err := renderMarkdown(displayed)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -280,6 +374,7 @@ func handleUIEditGet(w http.ResponseWriter, r *http.Request) {
 		"Namespace": ns,
 		"Filename":  name,
 		"Content":   content,
+		"Chrome":    chrome(),
 	})
 }
 
@@ -288,9 +383,24 @@ func handleUIEditPost(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	r.ParseForm()
 	content := r.FormValue("content")
+	comment := strings.TrimSpace(r.FormValue("comment"))
+	alreadyReviewed := r.FormValue("already_reviewed") == "1"
+
 	if err := store.Write(ns, name, content); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if comment != "" {
+		if err := store.InsertComment(ns, name, comment); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if alreadyReviewed {
+		if err := store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
@@ -308,6 +418,7 @@ func handleUIDelete(w http.ResponseWriter, r *http.Request) {
 func handleUINewGet(w http.ResponseWriter, r *http.Request) {
 	renderUI(w, "new", map[string]any{
 		"Namespace": r.URL.Query().Get("ns"),
+		"Chrome":    chrome(),
 	})
 }
 
@@ -316,6 +427,8 @@ func handleUINewPost(w http.ResponseWriter, r *http.Request) {
 	ns := strings.TrimSpace(r.FormValue("namespace"))
 	name := strings.TrimSpace(r.FormValue("filename"))
 	content := r.FormValue("content")
+	comment := strings.TrimSpace(r.FormValue("comment"))
+	alreadyReviewed := r.FormValue("already_reviewed") == "1"
 	if ns == "" || name == "" {
 		http.Error(w, "namespace and filename are required", http.StatusBadRequest)
 		return
@@ -324,7 +437,102 @@ func handleUINewPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if comment != "" {
+		_ = store.InsertComment(ns, name, comment)
+	}
+	if alreadyReviewed {
+		_ = store.Review(ns, name)
+	}
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
+}
+
+func handleUIReview(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	name := r.URL.Query().Get("name")
+	if err := store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
+}
+
+func handleUIReject(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	name := r.URL.Query().Get("name")
+	if err := store.Reject(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
+}
+
+func handleUIComments(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	name := r.URL.Query().Get("file")
+	includeReviewed := r.URL.Query().Get("include_reviewed") == "1"
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	comments, err := store.ListComments(ns, name, includeReviewed, 20, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	renderUI(w, "comments_fragment", map[string]any{
+		"Comments":  comments,
+		"NextOffset": offset + len(comments),
+		"HaveMore":  len(comments) == 20,
+		"Namespace": ns,
+		"Filename":  name,
+		"IncludeReviewed": includeReviewed,
+	})
+}
+
+func handleUIInbox(w http.ResponseWriter, r *http.Request) {
+	files, err := store.PendingFiles()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	renderUI(w, "inbox", map[string]any{
+		"Files":  files,
+		"Chrome": chrome(),
+	})
+}
+
+// handleUIExport streams a zip of all non-archive entries in a namespace.
+// Filenames inside the zip preserve slashes verbatim. Content is COALESCE(new, old).
+func handleUIExport(w http.ResponseWriter, r *http.Request) {
+	// path: /ui/export/{ns}.zip
+	rest := strings.TrimPrefix(r.URL.Path, "/ui/export/")
+	ns := strings.TrimSuffix(rest, ".zip")
+	if ns == "" || strings.Contains(ns, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	files, err := store.List(ns)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+ns+`.zip"`)
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+	for _, f := range files {
+		if isArchivePath(f.Filename) {
+			continue
+		}
+		content, _, err := store.Read(ns, f.Filename)
+		if err != nil {
+			continue
+		}
+		fw, err := zw.Create(f.Filename)
+		if err != nil {
+			return
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			return
+		}
+	}
 }
 
 func registerUIRoutes(mux *http.ServeMux) {
@@ -338,6 +546,11 @@ func registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/delete", uiAuth(handleUIDelete))
 	mux.HandleFunc("GET /ui/new", uiAuth(handleUINewGet))
 	mux.HandleFunc("POST /ui/new", uiAuth(handleUINewPost))
+	mux.HandleFunc("POST /ui/review", uiAuth(handleUIReview))
+	mux.HandleFunc("POST /ui/reject", uiAuth(handleUIReject))
+	mux.HandleFunc("GET /ui/comments", uiAuth(handleUIComments))
+	mux.HandleFunc("GET /ui/inbox", uiAuth(handleUIInbox))
+	mux.HandleFunc("GET /ui/export/", uiAuth(handleUIExport))
 }
 
 const uiCSS = `
@@ -351,7 +564,8 @@ const uiCSS = `
   @media (hover: hover) { a:hover { text-decoration: underline; } }
   header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
   header h1 { font-size: 20px; }
-  header nav { display: flex; gap: 12px; }
+  header nav { display: flex; gap: 12px; align-items: center; }
+  header nav .inbox { display: inline-flex; align-items: center; gap: 4px; }
   .ns { background: #f9fafb; padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid #e5e7eb; }
   .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ns ul { list-style: none; margin: 0; padding: 0; }
@@ -366,10 +580,13 @@ const uiCSS = `
   @media (hover: hover) { button:hover, .btn:hover { background: #1d4ed8; text-decoration: none; } }
   .btn-danger { background: #dc2626; }
   .btn-secondary { background: #6b7280; }
+  .btn-success { background: #059669; }
   .actions { margin: 16px 0; display: flex; gap: 10px; flex-wrap: wrap; }
   .actions > * { flex: 1 1 auto; min-width: 120px; }
   .field { margin: 14px 0; }
   .field label { display: block; font-size: 13px; color: #6b7280; margin-bottom: 6px; }
+  .field-inline { display: flex; gap: 8px; align-items: center; margin: 12px 0; font-size: 14px; color: #4b5563; }
+  .field-inline input[type=checkbox] { width: 18px; height: 18px; margin: 0; }
   .error { color: #dc2626; margin: 8px 0; }
   form.inline { display: inline; flex: 1 1 auto; }
   ul.tree { list-style: none; margin: 0; padding: 0; }
@@ -381,6 +598,21 @@ const uiCSS = `
   ul.tree details > summary::before { content: "▸"; display: inline-block; width: 1em; color: #9ca3af; transition: transform 0.1s; }
   ul.tree details[open] > summary::before { transform: rotate(90deg); }
   ul.tree .folder { font-weight: 600; }
+  .pending-dot { color: #d97706; font-size: 14px; line-height: 1; }
+  .pending-tag { color: #d97706; font-size: 12px; font-weight: 600; }
+  .review-banner { position: sticky; top: 0; z-index: 5; background: #fef3c7; border: 1px solid #f59e0b; color: #92400e; padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .review-banner strong { flex: 1 1 auto; }
+  .review-banner form { display: inline; }
+  .review-banner button { padding: 8px 14px; font-size: 14px; min-height: 0; }
+  .diff-container { border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; margin: 12px 0; }
+  #diff { width: 100%; height: 480px; }
+  .comments { margin-top: 24px; border-top: 1px solid #e5e7eb; padding-top: 16px; }
+  .comments h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+  .comments .toggle-history { font-size: 12px; font-weight: normal; text-transform: none; letter-spacing: normal; }
+  .comment { padding: 10px 12px; margin: 8px 0; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+  .comment.reviewed { opacity: 0.55; }
+  .comment .meta { font-size: 12px; margin-bottom: 4px; }
+  .comment .body { white-space: pre-wrap; word-break: break-word; }
   .md { line-height: 1.6; word-wrap: break-word; }
   .md h1 { font-size: 26px; margin: 24px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
   .md h2 { font-size: 22px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb; }
@@ -405,6 +637,7 @@ const uiCSS = `
     body { margin: 12px auto; padding: 0 12px; }
     header h1 { font-size: 18px; }
     .ns { padding: 12px; }
+    #diff { height: 360px; }
   }
 `
 
@@ -412,11 +645,20 @@ const chromeStart = `<!DOCTYPE html><html><head><title>go-brain</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <style>` + uiCSS + `</style></head><body>
-<header><h1><a href="/ui/">go-brain</a></h1><nav><a href="/ui/new">+ New</a> <a href="/ui/logout">Logout</a></nav></header>
+{{template "chrome_header" .Chrome}}
 `
 const chromeEnd = `</body></html>`
 
 const uiTemplateSrc = `
+{{define "chrome_header"}}<header>
+  <h1><a href="/ui/">go-brain</a></h1>
+  <nav>
+    <a class="inbox" href="/ui/inbox">Inbox{{if .InboxCount}} <span class="pending-tag">({{.InboxCount}})</span>{{end}}</a>
+    <a href="/ui/new">+ New</a>
+    <a href="/ui/logout">Logout</a>
+  </nav>
+</header>{{end}}
+
 {{define "login"}}<!DOCTYPE html><html><head><title>go-brain — Login</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -440,7 +682,13 @@ const uiTemplateSrc = `
 {{if .Groups}}<p class="meta">≈ {{tokens .GrandTotal}} tokens total</p>{{end}}
 {{range .Groups}}
 <div class="ns">
-  <h3>{{.Namespace}} <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span> <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a></h3>
+  <h3>
+    {{.Namespace}}
+    {{if .PendingCount}}<span class="pending-dot" title="{{.PendingCount}} pending">●</span>{{end}}
+    <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span>
+    <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a>
+    <a href="/ui/export/{{.Namespace}}.zip" style="font-size:12px;margin-left:4px">↓ download</a>
+  </h3>
   {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
 </div>
 {{end}}
@@ -451,10 +699,14 @@ const uiTemplateSrc = `
   <li>
     {{if .IsFile}}
     <a href="/ui/file?ns={{$ns | urlquery}}&name={{.FullPath | urlquery}}">{{.Name}}</a>
+    {{if .HasPending}} <span class="pending-dot" title="pending review">●</span>{{end}}
     <span class="meta">— {{.File.UpdatedAt}} · ≈ {{tokens .Size}} tokens</span>
     {{else}}
-    <details open>
-      <summary><span class="folder">{{.Name}}/</span> <span class="meta">≈ {{tokens .Size}} tokens</span></summary>
+    <details {{if not (isArchiveFolder .Name)}}open{{end}}>
+      <summary>
+        <span class="folder">{{.Name}}/</span>
+        <span class="meta">≈ {{tokens .Size}} tokens{{if .Pending}}, <span class="pending-tag">{{.Pending}} pending</span>{{end}}</span>
+      </summary>
       {{template "treeChildren" (nodeCtx $ns .)}}
     </details>
     {{end}}
@@ -463,8 +715,43 @@ const uiTemplateSrc = `
 </ul>{{end}}
 
 {{define "file"}}` + chromeStart + `
-<p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong></p>
+<p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong>{{if .HasPending}} <span class="pending-dot">●</span>{{end}}</p>
 <p class="meta">Updated {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens</p>
+
+{{if .HasPending}}
+<div class="review-banner">
+  <strong>Unreviewed changes since last review.</strong>
+  <form method="POST" action="/ui/review?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+    <button type="submit" class="btn-success">Review</button>
+  </form>
+  <form method="POST" action="/ui/reject?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+    <button type="submit" class="btn-danger">Reject</button>
+  </form>
+</div>
+<textarea id="content-left" style="display:none">{{.Content}}</textarea>
+<textarea id="content-right" style="display:none">{{.New}}</textarea>
+<div class="diff-container"><div id="diff"></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+<script>
+  require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+  require(['vs/editor/editor.main'], function () {
+    var oldText = document.getElementById('content-left').value;
+    var newText = document.getElementById('content-right').value;
+    var lang = /\.md$/i.test({{.Filename}}) ? 'markdown' : 'plaintext';
+    var diff = monaco.editor.createDiffEditor(document.getElementById('diff'), {
+      readOnly: true,
+      renderSideBySide: false,
+      automaticLayout: true,
+      originalEditable: false,
+      hideUnchangedRegions: { enabled: false }
+    });
+    diff.setModel({
+      original: monaco.editor.createModel(oldText, lang),
+      modified: monaco.editor.createModel(newText, lang)
+    });
+  });
+</script>
+{{else}}
 <div class="actions">
   <a class="btn" href="/ui/edit?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">Edit</a>
   <form class="inline" method="POST" action="/ui/delete?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}" onsubmit="return confirm('Delete {{.Filename}}?')">
@@ -472,6 +759,61 @@ const uiTemplateSrc = `
   </form>
 </div>
 {{if .Rendered}}<div class="md">{{.Rendered}}</div>{{else}}<pre>{{.Content}}</pre>{{end}}
+{{end}}
+
+<div class="comments" id="comments-section">
+  <h3>
+    Comments
+    {{if .IncludeHistory}}
+    <a class="toggle-history" href="?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">Hide history</a>
+    {{else}}
+    <a class="toggle-history" href="?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}&history=1">Show history</a>
+    {{end}}
+  </h3>
+  <div id="comments-list">
+    {{template "comments_fragment" (dict "Comments" .Comments "NextOffset" 20 "HaveMore" .CommentsHaveMore "Namespace" .Namespace "Filename" .Filename "IncludeReviewed" .IncludeHistory)}}
+  </div>
+</div>
+` + chromeEnd + `{{end}}
+
+{{define "comments_fragment"}}
+{{if not .Comments}}<p class="meta">No comments.</p>{{end}}
+{{range .Comments}}
+<div class="comment {{if .Reviewed}}reviewed{{end}}">
+  <div class="meta">{{.CreatedAt}}{{if .Reviewed}} · reviewed{{end}}</div>
+  <div class="body">{{.Content}}</div>
+</div>
+{{end}}
+{{if .HaveMore}}
+<form method="GET" action="/ui/comments" style="margin-top:10px">
+  <input type="hidden" name="ns" value="{{.Namespace}}" />
+  <input type="hidden" name="file" value="{{.Filename}}" />
+  <input type="hidden" name="offset" value="{{.NextOffset}}" />
+  {{if .IncludeReviewed}}<input type="hidden" name="include_reviewed" value="1" />{{end}}
+  <button type="submit" class="btn btn-secondary">Show more</button>
+</form>
+{{end}}
+{{end}}
+
+{{define "inbox"}}` + chromeStart + `
+<h2>Inbox</h2>
+{{if not .Files}}<p class="meta">No pending changes.</p>{{end}}
+{{if .Files}}
+<ul class="tree">
+{{range .Files}}
+  <li>
+    <a href="/ui/file?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+      <strong>{{.Namespace}}</strong> / {{.Filename}}
+    </a>
+    <span class="pending-dot">●</span>
+    <div class="meta">
+      {{if .CommentCount}}{{.CommentCount}} comment{{if ne .CommentCount 1}}s{{end}} · {{snippet .LastCommentSnippet}}{{else}}no comment{{end}}
+      · {{.SortAt}}
+    </div>
+  </li>
+{{end}}
+</ul>
+{{end}}
 ` + chromeEnd + `{{end}}
 
 {{define "edit"}}` + chromeStart + `
@@ -480,6 +822,14 @@ const uiTemplateSrc = `
   <div class="field">
     <textarea name="content">{{.Content}}</textarea>
   </div>
+  <div class="field">
+    <label>Comment (optional)</label>
+    <textarea name="comment" rows="2" style="min-height:60px" placeholder="Why this change?"></textarea>
+  </div>
+  <label class="field-inline">
+    <input type="checkbox" name="already_reviewed" value="1" />
+    I've already reviewed this
+  </label>
   <div class="actions">
     <button type="submit">Save</button>
     <a class="btn btn-secondary" href="/ui/file?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">Cancel</a>
@@ -502,6 +852,14 @@ const uiTemplateSrc = `
     <label>Content</label>
     <textarea name="content"></textarea>
   </div>
+  <div class="field">
+    <label>Comment (optional)</label>
+    <textarea name="comment" rows="2" style="min-height:60px" placeholder="Why this change?"></textarea>
+  </div>
+  <label class="field-inline">
+    <input type="checkbox" name="already_reviewed" value="1" />
+    I've already reviewed this
+  </label>
   <div class="actions">
     <button type="submit">Create</button>
     <a class="btn btn-secondary" href="/ui/">Cancel</a>

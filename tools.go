@@ -8,6 +8,8 @@ import (
 
 const filenameDescription = "Name of the file. Slashes create folders for display purposes, e.g. \"journal/2026-05-23.md\" or \"projects/website/notes.md\"."
 
+const commentDescription = "Optional. Short explanation of why this change was made. Use when the change isn't self-evident from the diff."
+
 var mcpTools = []map[string]any{
 	{
 		"name":        "read",
@@ -31,6 +33,7 @@ var mcpTools = []map[string]any{
 				"namespace": map[string]any{"type": "string"},
 				"filename":  map[string]any{"type": "string", "description": filenameDescription},
 				"content":   map[string]any{"type": "string"},
+				"comment":   map[string]any{"type": "string", "description": commentDescription},
 			},
 			"required": []string{"namespace", "filename", "content"},
 		},
@@ -44,6 +47,7 @@ var mcpTools = []map[string]any{
 				"namespace": map[string]any{"type": "string"},
 				"filename":  map[string]any{"type": "string", "description": filenameDescription},
 				"content":   map[string]any{"type": "string"},
+				"comment":   map[string]any{"type": "string", "description": commentDescription},
 			},
 			"required": []string{"namespace", "filename", "content"},
 		},
@@ -58,6 +62,7 @@ var mcpTools = []map[string]any{
 				"filename":   map[string]any{"type": "string", "description": filenameDescription},
 				"old_string": map[string]any{"type": "string", "description": "Exact bytes to find. Must occur exactly once in the file."},
 				"new_string": map[string]any{"type": "string", "description": "Replacement bytes."},
+				"comment":    map[string]any{"type": "string", "description": commentDescription},
 			},
 			"required": []string{"namespace", "filename", "old_string", "new_string"},
 		},
@@ -141,6 +146,45 @@ var mcpTools = []map[string]any{
 			"required": []string{"namespace", "filename", "new_filename"},
 		},
 	},
+	// {
+	// 	"name":        "comments",
+	// 	"description": "List edit-changelog comments on a file (or across a namespace if filename is omitted). Returns rows newest first. Defaults to unreviewed only, 20 most recent.",
+	// 	"inputSchema": map[string]any{
+	// 		"type": "object",
+	// 		"properties": map[string]any{
+	// 			"namespace":        map[string]any{"type": "string"},
+	// 			"filename":         map[string]any{"type": "string", "description": "Optional. Scope to one file."},
+	// 			"include_reviewed": map[string]any{"type": "boolean", "description": "Include reviewed comments. Defaults to false."},
+	// 			"limit":            map[string]any{"type": "integer", "description": "Page size (default 20)."},
+	// 			"offset":           map[string]any{"type": "integer", "description": "Pagination offset (default 0)."},
+	// 		},
+	// 		"required": []string{"namespace"},
+	// 	},
+	// },
+	// {
+	// 	"name":        "review",
+	// 	"description": "Accept the pending change on a file: copy `new` → `old`, clear `new`, mark this file's open comments reviewed. Errors if the file has no pending change.",
+	// 	"inputSchema": map[string]any{
+	// 		"type": "object",
+	// 		"properties": map[string]any{
+	// 			"namespace": map[string]any{"type": "string"},
+	// 			"filename":  map[string]any{"type": "string", "description": filenameDescription},
+	// 		},
+	// 		"required": []string{"namespace", "filename"},
+	// 	},
+	// },
+	// {
+	// 	"name":        "reject",
+	// 	"description": "Revert the pending change on a file: clear `new`, mark this file's open comments reviewed. The content reverts to the last reviewed `old`. Errors if the file has no pending change.",
+	// 	"inputSchema": map[string]any{
+	// 		"type": "object",
+	// 		"properties": map[string]any{
+	// 			"namespace": map[string]any{"type": "string"},
+	// 			"filename":  map[string]any{"type": "string", "description": filenameDescription},
+	// 		},
+	// 		"required": []string{"namespace", "filename"},
+	// 	},
+	// },
 	{
 		"name":        "move_many",
 		"description": "mv (batch) - Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back.",
@@ -165,6 +209,20 @@ var mcpTools = []map[string]any{
 			"required": []string{"moves"},
 		},
 	},
+}
+
+func intArg(args map[string]any, key string, def int) int {
+	v, ok := args[key]
+	if !ok {
+		return def
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return def
 }
 
 func runTool(store Store, name string, args map[string]any) (result any, isError bool) {
@@ -221,16 +279,73 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if err := store.Write(ns, filename, strings.Replace(content, oldStr, newStr, 1)); err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
+		if c := str("comment"); c != "" {
+			if err := store.InsertComment(ns, filename, c); err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
+		}
 		return map[string]bool{"ok": true}, false
 
 	case "write":
-		if err := store.Write(str("namespace"), str("filename"), str("content")); err != nil {
+		ns := str("namespace")
+		filename := str("filename")
+		if err := store.Write(ns, filename, str("content")); err != nil {
 			return map[string]string{"error": err.Error()}, true
+		}
+		if c := str("comment"); c != "" {
+			if err := store.InsertComment(ns, filename, c); err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
 		}
 		return map[string]bool{"ok": true}, false
 
 	case "append":
-		if err := store.Append(str("namespace"), str("filename"), str("content")); err != nil {
+		ns := str("namespace")
+		filename := str("filename")
+		if err := store.Append(ns, filename, str("content")); err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		if c := str("comment"); c != "" {
+			if err := store.InsertComment(ns, filename, c); err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
+		}
+		return map[string]bool{"ok": true}, false
+
+	case "comments":
+		ns := str("namespace")
+		filename := str("filename")
+		includeReviewed, _ := args["include_reviewed"].(bool)
+		limit := intArg(args, "limit", 20)
+		offset := intArg(args, "offset", 0)
+		rows, err := store.ListComments(ns, filename, includeReviewed, limit, offset)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]any{"comments": rows}, false
+
+	case "review":
+		err := store.Review(str("namespace"), str("filename"))
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "not found"}, true
+		}
+		if errors.Is(err, ErrNoPending) {
+			return map[string]string{"error": "no pending changes"}, true
+		}
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]bool{"ok": true}, false
+
+	case "reject":
+		err := store.Reject(str("namespace"), str("filename"))
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "not found"}, true
+		}
+		if errors.Is(err, ErrNoPending) {
+			return map[string]string{"error": "no pending changes"}, true
+		}
+		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
 		return map[string]bool{"ok": true}, false
@@ -345,21 +460,14 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 			parts := strings.Split(str("filename"), "/")
 			dstFile += parts[len(parts)-1]
 		}
-		content, _, err := store.Read(srcNS, str("filename"))
+		err := store.Copy(srcNS, str("filename"), dstNS, dstFile)
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "source not found"}, true
 		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		_, _, existErr := store.Read(dstNS, dstFile)
-		if existErr == nil {
+		if errors.Is(err, ErrDestinationExists) {
 			return map[string]string{"error": "destination already exists"}, true
 		}
-		if !errors.Is(existErr, ErrNotFound) {
-			return map[string]string{"error": existErr.Error()}, true
-		}
-		if err := store.Write(dstNS, dstFile, content); err != nil {
+		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
 		return map[string]bool{"ok": true}, false
@@ -647,4 +755,3 @@ func thousands(n int) string {
 	}
 	return string(out)
 }
-
