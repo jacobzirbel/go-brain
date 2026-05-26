@@ -809,11 +809,18 @@ const uiTemplateSrc = `
 
 {{if .HasPending}}
 <div class="review-banner">
-  <strong>Unreviewed changes since last review.</strong>
-  <form method="POST" action="/ui/review?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+  <strong id="banner-text">Unreviewed changes since last review.</strong>
+  <form id="form-save" method="POST" action="/ui/edit?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+    <input type="hidden" name="content" />
+    <button type="submit" id="btn-save" disabled>Save</button>
+  </form>
+  <form id="form-review" method="POST" action="/ui/edit?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+    <input type="hidden" name="content" />
+    <input type="hidden" name="already_reviewed" value="1" />
     <button type="submit" class="btn-success">Review</button>
   </form>
-  <form method="POST" action="/ui/reject?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+  <form id="form-reject" method="POST" action="/ui/reject?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}"
+        onsubmit="return confirm('Reject pending changes? Any unsaved edits will also be discarded.')">
     <button type="submit" class="btn-danger">Reject</button>
   </form>
 </div>
@@ -845,13 +852,13 @@ const uiTemplateSrc = `
     monaco.editor.setTheme(initialTheme);
 
     var diff = monaco.editor.createDiffEditor(document.getElementById('diff'), {
-      readOnly: true,
+      readOnly: false,          // modified side is editable so the user can revise during review
       renderSideBySide: sbs,
       // Without this, Monaco silently falls back to the inline view when the
       // viewport is narrow — making the "Side-by-side" toggle look broken.
       useInlineViewWhenSpaceIsLimited: false,
       automaticLayout: true,
-      originalEditable: false,
+      originalEditable: false,  // left side (last reviewed) stays read-only
       hideUnchangedRegions: { enabled: false },
       wordWrap: wrap ? 'on' : 'off',
       theme: initialTheme
@@ -859,6 +866,33 @@ const uiTemplateSrc = `
     diff.setModel({
       original: monaco.editor.createModel(oldText, lang),
       modified: monaco.editor.createModel(newText, lang)
+    });
+
+    // Dirty tracking: enable Save + flag the banner when the modified side
+    // diverges from the server's new column.
+    var saveBtn   = document.getElementById('btn-save');
+    var banner    = document.getElementById('banner-text');
+    var bannerOK  = 'Unreviewed changes since last review.';
+    var bannerDirty = 'Unreviewed changes since last review. — edits unsaved';
+    function currentText() { return diff.getModel().modified.getValue(); }
+    function isDirty()     { return currentText() !== newText; }
+    function refreshDirty() {
+      var d = isDirty();
+      saveBtn.disabled = !d;
+      banner.textContent = d ? bannerDirty : bannerOK;
+    }
+    diff.getModel().modified.onDidChangeContent(refreshDirty);
+
+    // Inject current diff text into Save + Review forms at submit time.
+    ['form-save', 'form-review'].forEach(function (id) {
+      var f = document.getElementById(id);
+      f.addEventListener('submit', function () {
+        f.querySelector('input[name=content]').value = currentText();
+      });
+    });
+    // Warn before nav if the user has unsaved edits.
+    window.addEventListener('beforeunload', function (e) {
+      if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
     });
 
     wrapBox.addEventListener('change', function () {
