@@ -44,6 +44,49 @@ func TestEditTool_NotUnique(t *testing.T) {
 	}
 }
 
+func TestWrite_NormalizesCRLF(t *testing.T) {
+	s := setupStore(t)
+	if err := s.Write("ns", "f.md", "a\r\nb\r\nc"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "a\nb\nc" {
+		t.Errorf("stored content not LF: %q", got)
+	}
+}
+
+func TestAppend_NormalizesCRLF(t *testing.T) {
+	s := setupStore(t)
+	if err := s.Write("ns", "f.md", "a\nb"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append("ns", "f.md", "c\r\nd"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "a\nb\nc\nd" {
+		t.Errorf("appended content not LF: %q", got)
+	}
+}
+
+func TestEditTool_CRLFOldStringMatchesLFContent(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "line1\nline2\nline3")
+	res, isErr := runTool(s, "edit", map[string]any{
+		"namespace":  "ns",
+		"filename":   "f.md",
+		"old_string": "line1\r\nline2",
+		"new_string": "X\r\nY",
+	})
+	if isErr {
+		t.Fatalf("expected success, got %v", res)
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "X\nY\nline3" {
+		t.Errorf("content after CRLF edit: %q", got)
+	}
+}
+
 func TestEditTool_NotFound(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "alpha gamma")

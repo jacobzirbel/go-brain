@@ -341,9 +341,20 @@ func (s *SQLiteStore) ReadEntry(namespace, filename string) (string, sql.NullStr
 	return content, newVal, updatedAt, err
 }
 
+// normalizeLineEndings folds CRLF → LF so stored content is canonical LF.
+// Web clients submit CRLF (browser form encoding); MCP tools submit LF. The
+// edit tool's literal string match would otherwise miss across clients.
+func normalizeLineEndings(s string) string {
+	if !strings.Contains(s, "\r\n") {
+		return s
+	}
+	return strings.ReplaceAll(s, "\r\n", "\n")
+}
+
 // Write sets entries.new = content. Leaves the canonical `content` untouched.
 // Wrapped in a tx so the FTS index stays in lock-step with entries.
 func (s *SQLiteStore) Write(namespace, filename, content string) error {
+	content = normalizeLineEndings(content)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -370,6 +381,7 @@ func (s *SQLiteStore) Write(namespace, filename, content string) error {
 
 // Append reads COALESCE(new, content), appends, and writes the result to `new`.
 func (s *SQLiteStore) Append(namespace, filename, content string) error {
+	content = normalizeLineEndings(content)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

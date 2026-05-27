@@ -273,8 +273,8 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 	case "edit":
 		ns := str("namespace")
 		filename := str("filename")
-		oldStr := str("old_string")
-		newStr := str("new_string")
+		oldStr := normalizeLineEndings(str("old_string"))
+		newStr := normalizeLineEndings(str("new_string"))
 		if oldStr == "" {
 			return map[string]string{"error": "old_string cannot be empty"}, true
 		}
