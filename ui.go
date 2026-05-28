@@ -464,6 +464,10 @@ func handleUIReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if r.URL.Query().Get("return") == "inbox" {
+		http.Redirect(w, r, "/ui/inbox", http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
 
@@ -1049,6 +1053,9 @@ const uiTemplateSrc = `
       <strong>{{.Namespace}}</strong> / {{.Filename}}
     </a>
     <span class="pending-dot">●</span>
+    <form method="POST" action="/ui/review?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}&return=inbox" style="display:inline">
+      <button type="submit" class="btn-success">Approve</button>
+    </form>
     <div class="meta">
       {{if .CommentCount}}{{.CommentCount}} comment{{if ne .CommentCount 1}}s{{end}} · {{snippet .LastCommentSnippet}}{{else}}no comment{{end}}
       · {{.SortAt}}
