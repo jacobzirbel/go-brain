@@ -37,7 +37,7 @@ func isGlobPattern(s string) bool {
 }
 
 // filterByGlob keeps files whose full slash-delimited filename matches the
-// doublestar pattern. Used by `list(pattern=...)`.
+// doublestar pattern. Used by `tree(path=...)` when path contains *, ?, or [.
 func filterByGlob(files []FileEntry, pattern string) ([]FileEntry, error) {
 	out := make([]FileEntry, 0, len(files))
 	for _, f := range files {
@@ -212,7 +212,7 @@ func slugifyHeading(s string) string {
 // approxTokens matches the UI's chars/4 heuristic.
 func approxTokens(n int) int { return n / 4 }
 
-// Archive-style prefixes are excluded from default `tree` / `list` output.
+// Archive-style prefixes are excluded from default `tree` output.
 // "archive/" and "archived/" are both used in practice (the archive tool writes
 // to "archived/" but some namespaces predate that). "deleted/" is where the
 // remove tool moves files (soft-delete).

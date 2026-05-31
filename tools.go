@@ -76,28 +76,16 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
-		"name":        "list",
-		"description": "ls - List files in a namespace. Filenames may contain slashes to indicate folders. By default files under archive/, archived/, and deleted/ prefixes are hidden; pass `include_archive=true` or a `pattern` that targets one of those prefixes to see them.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace":       map[string]any{"type": "string"},
-				"pattern":         map[string]any{"type": "string", "description": "Optional doublestar glob filter (e.g. \"**/*.md\", \"decisions/*.md\", \"archive/**\"). Match is against the full slash-delimited filename. A pattern starting with archive/, archived/, or deleted/ overrides the default exclusion."},
-				"include_archive": map[string]any{"type": "boolean", "description": "Include archive/archived/deleted prefixes in results. Defaults to false."},
-			},
-			"required": []string{"namespace"},
-		},
-	},
-	{
 		"name":        "tree",
-		"description": "tree - Folder structure of a namespace as a readable tree, with markdown headings surfaced as nested section nodes under .md files. Section labels show the **original heading text** (not the slug); use that text — or the slug — with `read(section=...)`.\n\nDEFAULTS (Phase 11.1):\n- Root files expand with sections at depth=1 (## only).\n- Sub-folders collapse to \"name/ (N items)\" summaries — pass `path=\"name/\"` to expand a folder.\n- Files under archive/, archived/, deleted/ are hidden; pass `include_archive=true` or a path that explicitly targets one to see them.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), literal folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\"). Glob detected by *, ?, [. Glob paths bypass folder collapse — matches render fully so the query result isn't hidden behind summaries.\n- `depth`: 0=files only; 1=## only (default); 2=## and ###; N=up to level N+1; 99=all heading levels AND full folder recursion (skips folder collapse).\n- `include_archive`: include archive prefixes even when not targeted by path.\n\nSections with ≥400 approx tokens get annotated with their token count to surface kitchen-sink sections.",
+		"description": "tree - Folder structure of a namespace as a readable tree, with markdown headings surfaced as nested section nodes under .md files. Section labels show the **original heading text** (not the slug); use that text — or the slug — with `read(section=...)`.\n\nDEFAULTS:\n- Root files expand with sections at depth=1 (## only).\n- Sub-folders collapse to \"name/ (N items)\" summaries — pass `path=\"name/\"` to expand a folder.\n- Files under archive/, archived/, deleted/ are hidden; pass `include_archive=true` or a path that explicitly targets one to see them.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), literal folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\"). Glob detected by *, ?, [. Glob paths bypass folder collapse — matches render fully so the query result isn't hidden behind summaries.\n- `depth`: 0=files only; 1=## only (default); 2=## and ###; N=up to level N+1; 99=all heading levels AND full folder recursion (skips folder collapse).\n- `include_archive`: include archive prefixes even when not targeted by path.\n- `meta`: when true, annotate each file node with its last-modified date and a pending flag.\n\nSections with ≥400 approx tokens get annotated with their token count to surface kitchen-sink sections.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"namespace":       map[string]any{"type": "string"},
-				"path":            map[string]any{"type": "string", "description": "Optional literal filename, folder prefix (\"tasks/\"), or doublestar glob (\"**/decisions.md\")."},
+				"path":            map[string]any{"type": "string", "description": "Optional literal filename, folder prefix (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\")."},
 				"depth":           map[string]any{"type": "integer", "description": "Section heading depth. 0/1/2/.../99 — see tool description."},
 				"include_archive": map[string]any{"type": "boolean", "description": "Include archive/archived/deleted prefixes. Defaults to false."},
+				"meta":            map[string]any{"type": "boolean", "description": "Annotate each file with updated_at date and pending status. Defaults to false."},
 			},
 			"required": []string{"namespace"},
 		},
@@ -381,27 +369,6 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		return map[string]any{"namespaces": nsList}, false
 
-	case "list":
-		files, err := store.List(str("namespace"))
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		pattern := str("pattern")
-		includeArchive, _ := args["include_archive"].(bool)
-		// Default: hide archive/archived/deleted. Caller can opt in via flag
-		// or by writing a pattern that explicitly targets one of those prefixes.
-		if !includeArchive && !pathTargetsArchive(pattern) {
-			files = excludeArchive(files)
-		}
-		if pattern != "" {
-			filtered, err := filterByGlob(files, pattern)
-			if err != nil {
-				return map[string]string{"error": fmt.Sprintf("invalid glob pattern: %v", err)}, true
-			}
-			files = filtered
-		}
-		return map[string]any{"files": files}, false
-
 	case "tree":
 		ns := str("namespace")
 		files, err := store.List(ns)
@@ -410,8 +377,8 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		path := str("path")
 		includeArchive, _ := args["include_archive"].(bool)
-		// Archive exclusion: same rule as list — hide by default unless
-		// caller opts in or scopes their path into an archive prefix.
+		// Archive exclusion: hide by default unless caller opts in or
+		// scopes their path into an archive prefix.
 		if !includeArchive && !pathTargetsArchive(path) {
 			files = excludeArchive(files)
 		}
@@ -426,6 +393,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 			}
 		}
 
+		meta, _ := args["meta"].(bool)
 		globMode := isGlobPattern(path)
 		if path != "" {
 			files, err = filterByPath(files, path)
@@ -440,11 +408,11 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		// "(N items)" would hide the user's actual query result).
 		var out string
 		if depth >= 99 || globMode {
-			out = renderTreeWithSections(tree, ns, store, "", true, depth)
+			out = renderTreeWithSections(tree, ns, store, "", true, depth, meta)
 		} else {
 			// scopePath is empty for namespace-root; otherwise the literal
 			// folder/file path. (Glob already routed above.)
-			out = renderTreeShallow(tree, path, ns, store, depth)
+			out = renderTreeShallow(tree, path, ns, store, depth, meta)
 		}
 		return map[string]string{"tree": strings.TrimRight(out, "\n")}, false
 
@@ -594,7 +562,7 @@ const sectionTokenThreshold = 400
 // `ls`-like semantics — files expand with sections, sub-folders collapse to
 // "name/ (N items)" summaries. depth=99 or glob path-mode routes through
 // renderTreeWithSections instead for full recursion.
-func renderTreeShallow(root *treeNode, scopePath, namespace string, store Store, depth int) string {
+func renderTreeShallow(root *treeNode, scopePath, namespace string, store Store, depth int, meta bool) string {
 	scope := root
 	var header string
 	if scopePath != "" {
@@ -611,7 +579,7 @@ func renderTreeShallow(root *treeNode, scopePath, namespace string, store Store,
 			// single-file path: render just the file with its sections.
 			// Reuse the deep renderer so connector/section logic stays in one place.
 			parent := &treeNode{Children: []*treeNode{n}}
-			return renderTreeWithSections(parent, namespace, store, "", true, depth)
+			return renderTreeWithSections(parent, namespace, store, "", true, depth, meta)
 		}
 		scope = n
 		header = strings.TrimSuffix(scopePath, "/") + "/\n"
@@ -626,7 +594,11 @@ func renderTreeShallow(root *treeNode, scopePath, namespace string, store Store,
 			connector = "└── "
 		}
 		if child.IsFile {
-			sb.WriteString(connector + child.Name + "\n")
+			label := child.Name
+			if meta {
+				label += fileMeta(child.File)
+			}
+			sb.WriteString(connector + label + "\n")
 			childPrefix := "    "
 			if !isLast {
 				childPrefix = "│   "
@@ -665,7 +637,7 @@ func countFiles(node *treeNode) int {
 // surfaces markdown headings as nested section nodes. `depth` caps which
 // heading levels appear — see keepHeadingAtDepth. depth=0 short-circuits the
 // per-file content read entirely.
-func renderTreeWithSections(node *treeNode, namespace string, store Store, prefix string, isRoot bool, depth int) string {
+func renderTreeWithSections(node *treeNode, namespace string, store Store, prefix string, isRoot bool, depth int, meta bool) string {
 	var sb strings.Builder
 	for i, child := range node.Children {
 		isLast := i == len(node.Children)-1
@@ -679,6 +651,8 @@ func renderTreeWithSections(node *treeNode, namespace string, store Store, prefi
 		label := child.Name
 		if !child.IsFile {
 			label += "/"
+		} else if meta {
+			label += fileMeta(child.File)
 		}
 		fmt.Fprintf(&sb, "%s%s%s\n", prefix, connector, label)
 		childPrefix := prefix
@@ -697,10 +671,21 @@ func renderTreeWithSections(node *treeNode, namespace string, store Store, prefi
 				}
 			}
 		} else {
-			sb.WriteString(renderTreeWithSections(child, namespace, store, childPrefix, false, depth))
+			sb.WriteString(renderTreeWithSections(child, namespace, store, childPrefix, false, depth, meta))
 		}
 	}
 	return sb.String()
+}
+
+func fileMeta(f FileEntry) string {
+	date := f.UpdatedAt
+	if len(date) >= 10 {
+		date = date[:10]
+	}
+	if f.HasPending {
+		return "  [" + date + " • pending]"
+	}
+	return "  [" + date + "]"
 }
 
 // renderSections lays out sections (in source order) as a hierarchical tree.
