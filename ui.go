@@ -341,6 +341,7 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 		"UpdatedAt":  updatedAt,
 		"Size":       len(displayed),
 		"HasPending": hasPending,
+		"IsArchived": isArchivePath(name),
 		"Chrome":     chrome(),
 	}
 	if hasPending {
@@ -416,7 +417,29 @@ func handleUIEditPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
 
+func handleUIArchive(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	name := r.URL.Query().Get("name")
+	dst := "archived/" + name
+	if err := store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
 func handleUIDelete(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	name := r.URL.Query().Get("name")
+	dst := "deleted/" + name
+	if err := store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
+func handleUIHardDelete(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
 	if err := store.Delete(ns, name); err != nil && !errors.Is(err, ErrNotFound) {
@@ -558,7 +581,9 @@ func registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/file", uiAuth(handleUIFile))
 	mux.HandleFunc("GET /ui/edit", uiAuth(handleUIEditGet))
 	mux.HandleFunc("POST /ui/edit", uiAuth(handleUIEditPost))
+	mux.HandleFunc("POST /ui/archive", uiAuth(handleUIArchive))
 	mux.HandleFunc("POST /ui/delete", uiAuth(handleUIDelete))
+	mux.HandleFunc("POST /ui/hard-delete", uiAuth(handleUIHardDelete))
 	mux.HandleFunc("GET /ui/new", uiAuth(handleUINewGet))
 	mux.HandleFunc("POST /ui/new", uiAuth(handleUINewPost))
 	mux.HandleFunc("POST /ui/review", uiAuth(handleUIReview))
@@ -1001,8 +1026,16 @@ const uiTemplateSrc = `
 {{else}}
 <div class="actions">
   <a class="btn" href="/ui/edit?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">Edit</a>
+  {{if not .IsArchived}}
+  <form class="inline" method="POST" action="/ui/archive?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}" onsubmit="return confirm('Archive {{.Filename}}?')">
+    <button type="submit" class="btn-secondary">Archive</button>
+  </form>
+  {{end}}
   <form class="inline" method="POST" action="/ui/delete?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}" onsubmit="return confirm('Delete {{.Filename}}?')">
     <button type="submit" class="btn-danger">Delete</button>
+  </form>
+  <form class="inline" method="POST" action="/ui/hard-delete?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}" onsubmit="return confirm('Permanently erase {{.Filename}}? This cannot be undone.')">
+    <button type="submit" class="btn-danger">Hard Delete</button>
   </form>
 </div>
 {{if .Rendered}}<div class="md">{{.Rendered}}</div>{{else}}<pre>{{.Content}}</pre>{{end}}

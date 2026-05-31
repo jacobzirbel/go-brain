@@ -212,14 +212,24 @@ func slugifyHeading(s string) string {
 // approxTokens matches the UI's chars/4 heuristic.
 func approxTokens(n int) int { return n / 4 }
 
-// Archive-style prefixes are excluded from default `tree` output.
-// "archive/" and "archived/" are both used in practice (the archive tool writes
-// to "archived/" but some namespaces predate that). "deleted/" is where the
-// remove tool moves files (soft-delete).
-var archivePrefixes = []string{"archive/", "archived/", "deleted/"}
+// archivePrefixes are hidden by default but shown when include_archive=true.
+// "archived/" is canonical; "archive/" is legacy (some older namespaces use it)
+// and is handled transparently without being exposed to users.
+var archivePrefixes = []string{"archive/", "archived/"}
 
+// deletedPrefixes are always hidden — include_archive=true does not expose them.
+// Only an explicit path targeting deleted/ will surface these files.
+var deletedPrefixes = []string{"deleted/"}
+
+// isArchivePath returns true for any hidden prefix (archived or deleted).
+// Used for export filtering — we skip both.
 func isArchivePath(filename string) bool {
 	for _, p := range archivePrefixes {
+		if strings.HasPrefix(filename, p) {
+			return true
+		}
+	}
+	for _, p := range deletedPrefixes {
 		if strings.HasPrefix(filename, p) {
 			return true
 		}
@@ -227,9 +237,9 @@ func isArchivePath(filename string) bool {
 	return false
 }
 
-// pathTargetsArchive returns true if a user-supplied path/pattern is explicitly
-// scoped into an archive prefix. Used to disable archive-exclusion when the
-// caller obviously meant to see archived content.
+// pathTargetsArchive returns true if path explicitly scopes into an archive prefix.
+// Used to disable archive-exclusion when the caller obviously meant to see archived content.
+// Does NOT match deleted/ — that requires an explicit deleted/ path.
 func pathTargetsArchive(path string) bool {
 	if path == "" {
 		return false
@@ -243,10 +253,48 @@ func pathTargetsArchive(path string) bool {
 	return false
 }
 
+// pathTargetsDeleted returns true if path explicitly scopes into deleted/.
+func pathTargetsDeleted(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, p := range deletedPrefixes {
+		stripped := strings.TrimSuffix(p, "/")
+		if path == p || path == stripped || strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func excludeArchive(files []FileEntry) []FileEntry {
 	out := make([]FileEntry, 0, len(files))
 	for _, f := range files {
-		if !isArchivePath(f.Filename) {
+		skip := false
+		for _, p := range archivePrefixes {
+			if strings.HasPrefix(f.Filename, p) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func excludeDeleted(files []FileEntry) []FileEntry {
+	out := make([]FileEntry, 0, len(files))
+	for _, f := range files {
+		skip := false
+		for _, p := range deletedPrefixes {
+			if strings.HasPrefix(f.Filename, p) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
 			out = append(out, f)
 		}
 	}

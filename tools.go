@@ -77,14 +77,14 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "tree",
-		"description": "tree - Folder structure of a namespace as a readable tree, with markdown headings surfaced as nested section nodes under .md files. Section labels show the **original heading text** (not the slug); use that text — or the slug — with `read(section=...)`.\n\nDEFAULTS:\n- Root files expand with sections at depth=1 (## only).\n- Sub-folders collapse to \"name/ (N items)\" summaries — pass `path=\"name/\"` to expand a folder.\n- Files under archive/, archived/, deleted/ are hidden; pass `include_archive=true` or a path that explicitly targets one to see them.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), literal folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\"). Glob detected by *, ?, [. Glob paths bypass folder collapse — matches render fully so the query result isn't hidden behind summaries.\n- `depth`: 0=files only; 1=## only (default); 2=## and ###; N=up to level N+1; 99=all heading levels AND full folder recursion (skips folder collapse).\n- `include_archive`: include archive prefixes even when not targeted by path.\n- `meta`: when true, annotate each file node with its last-modified date and a pending flag.\n\nSections with ≥400 approx tokens get annotated with their token count to surface kitchen-sink sections.",
+		"description": "tree - Folder structure of a namespace as a readable tree, with markdown headings surfaced as nested section nodes under .md files. Section labels show the **original heading text** (not the slug); use that text — or the slug — with `read(section=...)`.\n\nDEFAULTS:\n- Root files expand with sections at depth=1 (## only).\n- Sub-folders collapse to \"name/ (N items)\" summaries — pass `path=\"name/\"` to expand a folder.\n- Files under archived/ are hidden; pass `include_archive=true` or a path targeting archived/ to see them. Files under deleted/ are always hidden unless the path explicitly targets deleted/.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), literal folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\"). Glob detected by *, ?, [. Glob paths bypass folder collapse — matches render fully so the query result isn't hidden behind summaries.\n- `depth`: 0=files only; 1=## only (default); 2=## and ###; N=up to level N+1; 99=all heading levels AND full folder recursion (skips folder collapse).\n- `include_archive`: include archived/ prefix even when not targeted by path. Does not affect deleted/.\n- `meta`: when true, annotate each file node with its last-modified date and a pending flag.\n\nSections with ≥400 approx tokens get annotated with their token count to surface kitchen-sink sections.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"namespace":       map[string]any{"type": "string"},
 				"path":            map[string]any{"type": "string", "description": "Optional literal filename, folder prefix (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\")."},
 				"depth":           map[string]any{"type": "integer", "description": "Section heading depth. 0/1/2/.../99 — see tool description."},
-				"include_archive": map[string]any{"type": "boolean", "description": "Include archive/archived/deleted prefixes. Defaults to false."},
+				"include_archive": map[string]any{"type": "boolean", "description": "Include the archived/ prefix. Defaults to false. Does not include deleted/."},
 				"meta":            map[string]any{"type": "boolean", "description": "Annotate each file with updated_at date and pending status. Defaults to false."},
 			},
 			"required": []string{"namespace"},
@@ -92,7 +92,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "copy",
-		"description": "cp - Copy a file. If new_filename ends with '/', the source basename is appended (e.g. src=\"a/b.md\", new_filename=\"archive/\" → \"archive/b.md\"). Fails if the destination already exists.",
+		"description": "cp - Copy a file. If new_filename ends with '/', the source basename is appended (e.g. src=\"a/b.md\", new_filename=\"archived/\" → \"archived/b.md\"). Fails if the destination already exists.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -106,7 +106,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "archive",
-		"description": "Archive a file by moving it under the archived/ prefix.",
+		"description": "Archive a file for future reference. Moves it to the archived/ prefix, where it is excluded from search and list by default. Use for files you may want to read again but don't need day-to-day. Pass include_archive=true to search or list archived content.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -118,7 +118,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "remove",
-		"description": "rm - Remove a file.",
+		"description": "Delete a file. Moves it to the deleted/ prefix where it is permanently excluded from search and list. Treat as permanent.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -144,7 +144,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "search",
-		"description": "Full-text search of file contents within a single namespace. Returns matching files with snippet previews. Query syntax is FTS5: loose keyword by default, \"double quotes\" for phrase match, AND/OR/NOT operators allowed. Also matches the file's basename (the segment after the last '/' in the filename) — folder path components are not searched. Use the path parameter for glob-scoped search (e.g. path=\"tasks/**\"). By default excludes archive/, archived/, deleted/ folders; pass include_archive=true to include them. Always scoped to the namespace argument; cannot search across namespaces.",
+		"description": "Full-text search of file contents within a single namespace. Returns matching files with snippet previews. Query syntax is FTS5: loose keyword by default, \"double quotes\" for phrase match, AND/OR/NOT operators allowed. Also matches the file's basename (the segment after the last '/' in the filename) — folder path components are not searched. Use the path parameter for glob-scoped search (e.g. path=\"tasks/**\"). By default excludes archived/ and deleted/ folders; pass include_archive=true to include archived/ content (deleted/ is always excluded from search). Always scoped to the namespace argument; cannot search across namespaces.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -153,7 +153,7 @@ var mcpTools = []map[string]any{
 				"path":            map[string]any{"type": "string", "description": "Optional doublestar glob over filename, e.g. \"tasks/**\" or \"decisions/*.md\"."},
 				"limit":           map[string]any{"type": "integer", "description": "Page size. Default 20, hard cap 100."},
 				"order":           map[string]any{"type": "string", "description": "\"bm25\" (default, relevance) or \"recency\" (updated_at DESC)."},
-				"include_archive": map[string]any{"type": "boolean", "description": "Include archive/archived/deleted prefixes. Defaults to false."},
+				"include_archive": map[string]any{"type": "boolean", "description": "Include the archived/ prefix. Defaults to false. Does not include deleted/."},
 			},
 			"required": []string{"namespace", "query"},
 		},
@@ -408,8 +408,12 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		path := str("path")
 		includeArchive, _ := args["include_archive"].(bool)
-		// Archive exclusion: hide by default unless caller opts in or
-		// scopes their path into an archive prefix.
+		// deleted/ is always hidden unless path explicitly targets it.
+		if !pathTargetsDeleted(path) {
+			files = excludeDeleted(files)
+		}
+		// archive/archived/ are hidden by default; include_archive=true or an
+		// explicit archive path overrides this.
 		if !includeArchive && !pathTargetsArchive(path) {
 			files = excludeArchive(files)
 		}

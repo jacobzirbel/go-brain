@@ -820,8 +820,8 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 		  AND (? = 1 OR (
 			e.filename NOT GLOB 'archive/*'
 			AND e.filename NOT GLOB 'archived/*'
-			AND e.filename NOT GLOB 'deleted/*'
 		  ))
+		  AND e.filename NOT GLOB 'deleted/*'
 		ORDER BY ` + orderClause + `
 		LIMIT ?`
 

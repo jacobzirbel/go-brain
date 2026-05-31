@@ -261,10 +261,21 @@ func TestFTS_IncludeArchive(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "active.md", "ARNnonce")
 	_ = s.Write("ns", "archive/old.md", "ARNnonce")
+	_ = s.Write("ns", "archived/oldish.md", "ARNnonce")
+	_ = s.Write("ns", "deleted/gone.md", "ARNnonce")
 
 	hits, _ := s.Search(SearchOptions{Namespace: "ns", Query: "ARNnonce", IncludeArchive: true})
-	if len(hits) != 2 {
-		t.Errorf("expected 2 with include_archive=true; got %v", hits)
+	names := make([]string, len(hits))
+	for i, h := range hits {
+		names[i] = h.Filename
+	}
+	if len(hits) != 3 {
+		t.Errorf("expected 3 (active + archive + archived, not deleted); got %v", names)
+	}
+	for _, h := range hits {
+		if strings.HasPrefix(h.Filename, "deleted/") {
+			t.Errorf("include_archive=true should not return deleted/ files; got %v", h.Filename)
+		}
 	}
 }
 
