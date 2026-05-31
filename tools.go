@@ -19,14 +19,14 @@ var mcpTools = []map[string]any{
 			"properties": map[string]any{
 				"namespace": map[string]any{"type": "string", "description": "Namespace for the file"},
 				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"section":   map[string]any{"type": "string", "description": "Optional. Accepts: canonical slug (\"phase-10-design\"), the heading text as written (\"Phase 10 design\"), or a legacy slug with trailing dashes (\"phase-0-\" — deprecated, will be removed). On miss the error response includes the available canonical slugs in source order."},
+				"section":   map[string]any{"type": "string", "description": "Optional. Accepts a canonical slug (\"phase-10-design\") or the heading text as written (\"Phase 10 design\"). On miss the error lists available slugs in source order."},
 			},
 			"required": []string{"namespace", "filename"},
 		},
 	},
 	{
 		"name":        "write",
-		"description": "Overwrite a file in a namespace (creates if not exists)",
+		"description": "Overwrite a file in a namespace (creates if not exists).",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -40,7 +40,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "append",
-		"description": "Append text to a file in a namespace (creates if not exists; adds newline before new content if file is non-empty)",
+		"description": "Append text to a file in a namespace (creates if not exists; inserts a newline first if the file is non-empty).",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -54,13 +54,13 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "edit",
-		"description": "Surgical edit: replace `old_str` with `new_str` in the named file. Fails if `old_str` is missing or matches more than once. Compose with `read(section=...)` for section-scoped edits — the returned section bytes are verbatim and round-trip safely.",
+		"description": "Replace `old_str` with `new_str` in the named file. Fails if `old_str` is missing or matches more than once. Pair with `read(section=...)` for section-scoped edits — the returned bytes are verbatim and round-trip safely.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"namespace": map[string]any{"type": "string"},
 				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"old_str":   map[string]any{"type": "string", "description": "Exact bytes to find. Must occur exactly once in the file."},
+				"old_str":   map[string]any{"type": "string", "description": "Exact bytes to find. Must occur exactly once."},
 				"new_str":   map[string]any{"type": "string", "description": "Replacement bytes."},
 				"comment":   map[string]any{"type": "string", "description": commentDescription},
 			},
@@ -77,7 +77,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "tree",
-		"description": "tree - Folder structure of a namespace as a readable tree, with markdown headings surfaced as nested section nodes under .md files. Section labels show the **original heading text** (not the slug); use that text — or the slug — with `read(section=...)`.\n\nDEFAULTS:\n- Root files expand with sections at depth=1 (## only).\n- Sub-folders collapse to \"name/ (N items)\" summaries — pass `path=\"name/\"` to expand a folder.\n- Files under archived/ are hidden; pass `include_archive=true` or a path targeting archived/ to see them. Files under deleted/ are always hidden unless the path explicitly targets deleted/.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), literal folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\"). Glob detected by *, ?, [. Glob paths bypass folder collapse — matches render fully so the query result isn't hidden behind summaries.\n- `depth`: 0=files only; 1=## only (default); 2=## and ###; N=up to level N+1; 99=all heading levels AND full folder recursion (skips folder collapse).\n- `include_archive`: include archived/ prefix even when not targeted by path. Does not affect deleted/.\n- `meta`: when true, annotate each file node with its last-modified date and a pending flag.\n\nSections with ≥400 approx tokens get annotated with their token count to surface kitchen-sink sections.",
+		"description": "Folder structure of a namespace, with markdown headings surfaced as nested section nodes under each .md file. Section labels show the original heading text; pass that text — or the slug — to `read(section=...)`.\n\nDEFAULTS:\n- Root files expand to ## sections (depth=1).\n- Sub-folders collapse to \"name/ (N items)\" — pass `path=\"name/\"` to expand one.\n- archived/ is hidden unless include_archive=true or a path targets it; deleted/ is always hidden unless a path explicitly targets it.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\"). Globs bypass folder collapse so matches render in full.\n- `depth`: 0=files only; 1=## (default); 2=## and ###; N=up to level N+1; 99=all headings and full folder recursion.\n- `include_archive`: include archived/ (not deleted/).\n- `meta`: annotate each file with last-modified date and pending flag.\n\nSections ≥400 approx tokens are annotated with their token count.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -92,21 +92,21 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "copy",
-		"description": "cp - Copy a file. If new_filename ends with '/', the source basename is appended (e.g. src=\"a/b.md\", new_filename=\"archived/\" → \"archived/b.md\"). Fails if the destination already exists.",
+		"description": "Copy a file. If new_filename ends with '/', the source basename is appended (src=\"a/b.md\", new_filename=\"archived/\" → \"archived/b.md\"). Fails if the destination exists.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
 				"filename":      map[string]any{"type": "string", "description": "Source filename"},
-				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source namespace if omitted)"},
-				"new_filename":  map[string]any{"type": "string", "description": "Destination filename. Append '/' to copy into a folder using the source basename."},
+				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source)"},
+				"new_filename":  map[string]any{"type": "string", "description": "Destination filename. Trailing '/' copies into a folder using the source basename."},
 			},
 			"required": []string{"namespace", "filename", "new_filename"},
 		},
 	},
 	{
 		"name":        "archive",
-		"description": "Archive a file for future reference. Moves it to the archived/ prefix, where it is excluded from search and list by default. Use for files you may want to read again but don't need day-to-day. Pass include_archive=true to search or list archived content.",
+		"description": "Move a file to the archived/ prefix, excluded from search and list by default. Use for files you may reread but don't need day-to-day. Pass include_archive=true to see them again.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -118,7 +118,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "remove",
-		"description": "Delete a file. Moves it to the deleted/ prefix where it is permanently excluded from search and list. Treat as permanent.",
+		"description": "Delete a file",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -130,13 +130,13 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "move",
-		"description": "mv - Rename or move a file. The destination can be in a different namespace and/or a different folder (use slashes in the filename to change folders). Fails if the destination already exists.",
+		"description": "Rename or move a file. Destination may be a different namespace and/or folder (use slashes to change folders). Fails if the destination exists.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
 				"filename":      map[string]any{"type": "string", "description": "Source filename"},
-				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source namespace if omitted)"},
+				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source)"},
 				"new_filename":  map[string]any{"type": "string", "description": "Destination filename, may contain slashes"},
 			},
 			"required": []string{"namespace", "filename", "new_filename"},
@@ -144,16 +144,16 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "search",
-		"description": "Full-text search of file contents within a single namespace. Returns matching files with snippet previews. Query syntax is FTS5: loose keyword by default, \"double quotes\" for phrase match, AND/OR/NOT operators allowed. Also matches the file's basename (the segment after the last '/' in the filename) — folder path components are not searched. Use the path parameter for glob-scoped search (e.g. path=\"tasks/**\"). By default excludes archived/ and deleted/ folders; pass include_archive=true to include archived/ content (deleted/ is always excluded from search). Always scoped to the namespace argument; cannot search across namespaces.",
+		"description": "Full-text search within a single namespace; returns matching files with snippet previews. FTS5 syntax: loose keyword by default, \"double quotes\" for phrase, AND/OR/NOT for boolean. Also matches a file's basename, not its folder path. Use `path` for glob-scoped search. Excludes archived/ (pass include_archive=true)",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"namespace":       map[string]any{"type": "string", "description": "Namespace to search. Empty or \"*\" is an error — cross-namespace search is not supported."},
+				"namespace":       map[string]any{"type": "string", "description": "Namespace to search. Empty or \"*\" is an error — no cross-namespace search."},
 				"query":           map[string]any{"type": "string", "description": "FTS5 MATCH expression. Loose keyword by default; \"phrase\" for adjacency; AND/OR/NOT for boolean."},
 				"path":            map[string]any{"type": "string", "description": "Optional doublestar glob over filename, e.g. \"tasks/**\" or \"decisions/*.md\"."},
 				"limit":           map[string]any{"type": "integer", "description": "Page size. Default 20, hard cap 100."},
 				"order":           map[string]any{"type": "string", "description": "\"bm25\" (default, relevance) or \"recency\" (updated_at DESC)."},
-				"include_archive": map[string]any{"type": "boolean", "description": "Include the archived/ prefix. Defaults to false. Does not include deleted/."},
+				"include_archive": map[string]any{"type": "boolean", "description": "Include the archived/ prefix. Defaults to false."},
 			},
 			"required": []string{"namespace", "query"},
 		},
