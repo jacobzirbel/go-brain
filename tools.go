@@ -245,7 +245,11 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	switch name {
 	case "read":
-		content, updatedAt, err := store.Read(str("namespace"), str("filename"))
+		ns := str("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
+		content, updatedAt, err := store.Read(ns, str("filename"))
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
 		}
@@ -268,6 +272,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "edit":
 		ns := str("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		filename := str("filename")
 		oldStr := normalizeLineEndings(str("old_str"))
 		newStr := normalizeLineEndings(str("new_str"))
@@ -300,7 +307,13 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "write":
 		ns := str("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		filename := str("filename")
+		if _, present := args["content"]; !present || str("content") == "" {
+			return map[string]string{"error": "missing required argument: content"}, true
+		}
 		if err := store.Write(ns, filename, str("content")); err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
@@ -313,7 +326,13 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "append":
 		ns := str("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		filename := str("filename")
+		if _, present := args["content"]; !present || str("content") == "" {
+			return map[string]string{"error": "missing required argument: content"}, true
+		}
 		if err := store.Append(ns, filename, str("content")); err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
@@ -326,6 +345,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "comments":
 		ns := str("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		filename := str("filename")
 		includeReviewed, _ := args["include_reviewed"].(bool)
 		limit := intArg(args, "limit", 20)
@@ -337,6 +359,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		return map[string]any{"comments": rows}, false
 
 	case "review":
+		if str("namespace") == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		err := store.Review(str("namespace"), str("filename"))
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
@@ -350,6 +375,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		return map[string]bool{"ok": true}, false
 
 	case "reject":
+		if str("namespace") == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		err := store.Reject(str("namespace"), str("filename"))
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
@@ -371,6 +399,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "tree":
 		ns := str("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		files, err := store.List(ns)
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
@@ -418,6 +449,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "archive":
 		srcNS := str("namespace")
+		if srcNS == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		srcFile := str("filename")
 		dstFile := "archived/" + srcFile
 		err := store.Move(srcNS, srcFile, srcNS, dstFile)
@@ -434,6 +468,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "remove":
 		srcNS := str("namespace")
+		if srcNS == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		srcFile := str("filename")
 		dstFile := "deleted/" + srcFile
 		err := store.Move(srcNS, srcFile, srcNS, dstFile)
@@ -450,6 +487,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "copy":
 		srcNS := str("namespace")
+		if srcNS == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		dstNS := str("new_namespace")
 		if dstNS == "" {
 			dstNS = srcNS
@@ -472,6 +512,9 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		return map[string]bool{"ok": true}, false
 
 	case "move":
+		if str("namespace") == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
 		dstNS := str("new_namespace")
 		if dstNS == "" {
 			dstNS = str("namespace")

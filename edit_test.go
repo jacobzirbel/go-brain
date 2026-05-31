@@ -127,3 +127,85 @@ func TestEditTool_FileNotFound(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestWriteTool_MissingContent_Errors(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "important data")
+	_, isErr := runTool(s, "write", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+	})
+	if !isErr {
+		t.Fatal("expected error when content key is absent")
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "important data" {
+		t.Errorf("file was modified despite missing content: %q", got)
+	}
+}
+
+func TestWriteTool_EmptyContent_Errors(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "important data")
+	_, isErr := runTool(s, "write", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+		"content":   "",
+	})
+	if !isErr {
+		t.Fatal("expected error when content is empty string")
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "important data" {
+		t.Errorf("file was modified despite empty content: %q", got)
+	}
+}
+
+func TestAppendTool_MissingContent_Errors(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "existing")
+	_, isErr := runTool(s, "append", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+	})
+	if !isErr {
+		t.Fatal("expected error when content key is absent")
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "existing" {
+		t.Errorf("file was modified despite missing content: %q", got)
+	}
+}
+
+func TestReadTool_MissingNamespace_Errors(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "data")
+	res, isErr := runTool(s, "read", map[string]any{"filename": "f.md"})
+	if !isErr {
+		t.Fatal("expected error when namespace is absent")
+	}
+	m := res.(map[string]string)
+	if !strings.Contains(m["error"], "namespace") {
+		t.Errorf("error should mention namespace, got: %q", m["error"])
+	}
+}
+
+func TestWriteTool_MissingNamespace_Errors(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "important data")
+	res, isErr := runTool(s, "write", map[string]any{
+		"filename": "f.md",
+		"content":  "replacement",
+	})
+	if !isErr {
+		t.Fatal("expected error when namespace is absent")
+	}
+	m := res.(map[string]string)
+	if !strings.Contains(m["error"], "namespace") {
+		t.Errorf("error should mention namespace, got: %q", m["error"])
+	}
+	got, _, _ := s.Read("ns", "f.md")
+	if got != "important data" {
+		t.Errorf("file was modified despite missing namespace: %q", got)
+	}
+}
