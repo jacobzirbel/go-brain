@@ -54,8 +54,8 @@ func TestEditTool_WithComment_InsertsRow(t *testing.T) {
 	_, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "f.md",
-		"old_string": "beta",
-		"new_string": "GAMMA",
+		"old_str": "beta",
+		"new_str": "GAMMA",
 		"comment":    "renamed beta",
 	})
 	if isErr {

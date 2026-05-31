@@ -11,8 +11,8 @@ func TestEditTool_HappyPath(t *testing.T) {
 	res, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "f.md",
-		"old_string": "beta",
-		"new_string": "DELTA",
+		"old_str": "beta",
+		"new_str": "DELTA",
 	})
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
@@ -29,8 +29,8 @@ func TestEditTool_NotUnique(t *testing.T) {
 	res, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "f.md",
-		"old_string": "foo",
-		"new_string": "bar",
+		"old_str": "foo",
+		"new_str": "bar",
 	})
 	if !isErr {
 		t.Fatalf("expected uniqueness error, got %v", res)
@@ -75,8 +75,8 @@ func TestEditTool_CRLFOldStringMatchesLFContent(t *testing.T) {
 	res, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "f.md",
-		"old_string": "line1\r\nline2",
-		"new_string": "X\r\nY",
+		"old_str": "line1\r\nline2",
+		"new_str": "X\r\nY",
 	})
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
@@ -93,8 +93,8 @@ func TestEditTool_NotFound(t *testing.T) {
 	res, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "f.md",
-		"old_string": "beta",
-		"new_string": "DELTA",
+		"old_str": "beta",
+		"new_str": "DELTA",
 	})
 	if !isErr {
 		t.Fatalf("expected not-found error, got %v", res)
@@ -107,11 +107,11 @@ func TestEditTool_EmptyOldString(t *testing.T) {
 	_, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "f.md",
-		"old_string": "",
-		"new_string": "x",
+		"old_str": "",
+		"new_str": "x",
 	})
 	if !isErr {
-		t.Fatal("expected error for empty old_string")
+		t.Fatal("expected error for empty old_str")
 	}
 }
 
@@ -120,8 +120,8 @@ func TestEditTool_FileNotFound(t *testing.T) {
 	_, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "missing.md",
-		"old_string": "x",
-		"new_string": "y",
+		"old_str": "x",
+		"new_str": "y",
 	})
 	if !isErr {
 		t.Fatal("expected error for missing file")

@@ -232,8 +232,8 @@ func TestReadTool_SectionRoundTripsThroughEdit(t *testing.T) {
 	_, isErr := runTool(s, "edit", map[string]any{
 		"namespace":  "ns",
 		"filename":   "doc.md",
-		"old_string": sectionBytes,
-		"new_string": newSection,
+		"old_str": sectionBytes,
+		"new_str": newSection,
 	})
 	if isErr {
 		t.Fatalf("section bytes did not round-trip through edit: %v", res)

@@ -54,17 +54,17 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "edit",
-		"description": "Surgical edit: replace `old_string` with `new_string` in the named file. Fails if `old_string` is missing or matches more than once. Compose with `read(section=...)` for section-scoped edits — the returned section bytes are verbatim and round-trip safely.",
+		"description": "Surgical edit: replace `old_str` with `new_str` in the named file. Fails if `old_str` is missing or matches more than once. Compose with `read(section=...)` for section-scoped edits — the returned section bytes are verbatim and round-trip safely.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"namespace":  map[string]any{"type": "string"},
-				"filename":   map[string]any{"type": "string", "description": filenameDescription},
-				"old_string": map[string]any{"type": "string", "description": "Exact bytes to find. Must occur exactly once in the file."},
-				"new_string": map[string]any{"type": "string", "description": "Replacement bytes."},
-				"comment":    map[string]any{"type": "string", "description": commentDescription},
+				"namespace": map[string]any{"type": "string"},
+				"filename":  map[string]any{"type": "string", "description": filenameDescription},
+				"old_str":   map[string]any{"type": "string", "description": "Exact bytes to find. Must occur exactly once in the file."},
+				"new_str":   map[string]any{"type": "string", "description": "Replacement bytes."},
+				"comment":   map[string]any{"type": "string", "description": commentDescription},
 			},
-			"required": []string{"namespace", "filename", "old_string", "new_string"},
+			"required": []string{"namespace", "filename", "old_str", "new_str"},
 		},
 	},
 	{
@@ -273,10 +273,10 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 	case "edit":
 		ns := str("namespace")
 		filename := str("filename")
-		oldStr := normalizeLineEndings(str("old_string"))
-		newStr := normalizeLineEndings(str("new_string"))
+		oldStr := normalizeLineEndings(str("old_str"))
+		newStr := normalizeLineEndings(str("new_str"))
 		if oldStr == "" {
-			return map[string]string{"error": "old_string cannot be empty"}, true
+			return map[string]string{"error": "old_str cannot be empty"}, true
 		}
 		content, _, err := store.Read(ns, filename)
 		if errors.Is(err, ErrNotFound) {
@@ -287,10 +287,10 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		count := strings.Count(content, oldStr)
 		if count == 0 {
-			return map[string]string{"error": "old_string not found in file"}, true
+			return map[string]string{"error": "old_str not found in file"}, true
 		}
 		if count > 1 {
-			return map[string]any{"error": fmt.Sprintf("old_string matches %d times; must be unique", count), "matches": count}, true
+			return map[string]any{"error": fmt.Sprintf("old_str matches %d times; must be unique", count), "matches": count}, true
 		}
 		if err := store.Write(ns, filename, strings.Replace(content, oldStr, newStr, 1)); err != nil {
 			return map[string]string{"error": err.Error()}, true
