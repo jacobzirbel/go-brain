@@ -68,6 +68,14 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "namespaces",
+		"description": "List all namespaces that contain at least one file.",
+		"inputSchema": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	},
+	{
 		"name":        "list",
 		"description": "ls - List files in a namespace. Filenames may contain slashes to indicate folders. By default files under archive/, archived/, and deleted/ prefixes are hidden; pass `include_archive=true` or a `pattern` that targets one of those prefixes to see them.",
 		"inputSchema": map[string]any{
@@ -365,6 +373,13 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 			return map[string]string{"error": err.Error()}, true
 		}
 		return map[string]bool{"ok": true}, false
+
+	case "namespaces":
+		nsList, err := store.ListNamespaces()
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return map[string]any{"namespaces": nsList}, false
 
 	case "list":
 		files, err := store.List(str("namespace"))
