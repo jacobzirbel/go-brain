@@ -537,7 +537,7 @@ func handleUIInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUIExport streams a zip of all non-archive entries in a namespace.
-// Filenames inside the zip preserve slashes verbatim. Content is COALESCE(new, old).
+// Slashes in filenames are replaced with '-' so the zip is flat. Content is COALESCE(new, old).
 func handleUIExport(w http.ResponseWriter, r *http.Request) {
 	// path: /ui/export/{ns}.zip
 	rest := strings.TrimPrefix(r.URL.Path, "/ui/export/")
@@ -563,7 +563,7 @@ func handleUIExport(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		fw, err := zw.Create(f.Filename)
+		fw, err := zw.Create(strings.ReplaceAll(f.Filename, "/", "-"))
 		if err != nil {
 			return
 		}
