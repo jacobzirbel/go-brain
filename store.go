@@ -50,6 +50,7 @@ type SearchOptions struct {
 }
 
 type SearchHit struct {
+	Namespace string  `json:"namespace,omitempty"`
 	Filename  string  `json:"filename"`
 	UpdatedAt string  `json:"updated_at"`
 	Snippet   string  `json:"snippet"`
@@ -781,8 +782,9 @@ func (s *SQLiteStore) NamespacePendingCount(namespace string) (int, error) {
 	return n, err
 }
 
-// Search runs FTS5 MATCH against entries_fts, scoped to a single namespace.
-// The path glob (if any) is applied post-SQL via doublestar.
+// Search runs FTS5 MATCH against entries_fts. If opts.Namespace is "" or "*"
+// the search spans all namespaces; otherwise it's scoped to that one. The path
+// glob (if any) is applied post-SQL via doublestar.
 func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 	limit := opts.Limit
 	if limit <= 0 {
@@ -805,10 +807,16 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 	if opts.IncludeArchive {
 		includeArchive = 1
 	}
+	crossNS := opts.Namespace == "" || opts.Namespace == "*"
+	nsClause := `AND entries_fts.namespace = ?`
+	if crossNS {
+		nsClause = ``
+	}
 	// Snippet args: column 2 = body (after namespace=0, basename=1). '<' '>'
 	// as match delimiters, '…' ellipsis, 16-token window.
 	q := `
 		SELECT
+			e.namespace,
 			e.filename,
 			e.updated_at,
 			snippet(entries_fts, 2, '<', '>', '…', 16) AS snippet,
@@ -816,7 +824,7 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 		FROM entries_fts
 		JOIN entries e ON e.rowid = entries_fts.rowid
 		WHERE entries_fts MATCH ?
-		  AND entries_fts.namespace = ?
+		  ` + nsClause + `
 		  AND (? = 1 OR (
 			e.filename NOT GLOB 'archive/*'
 			AND e.filename NOT GLOB 'archived/*'
@@ -833,7 +841,12 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 	if opts.Path != "" {
 		rowBudget = 500
 	}
-	rows, err := s.db.Query(q, opts.Query, opts.Namespace, includeArchive, rowBudget)
+	queryArgs := []any{opts.Query}
+	if !crossNS {
+		queryArgs = append(queryArgs, opts.Namespace)
+	}
+	queryArgs = append(queryArgs, includeArchive, rowBudget)
+	rows, err := s.db.Query(q, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -842,7 +855,7 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 	out := []SearchHit{}
 	for rows.Next() {
 		var h SearchHit
-		if err := rows.Scan(&h.Filename, &h.UpdatedAt, &h.Snippet, &h.Score); err != nil {
+		if err := rows.Scan(&h.Namespace, &h.Filename, &h.UpdatedAt, &h.Snippet, &h.Score); err != nil {
 			return nil, err
 		}
 		if opts.Path != "" {

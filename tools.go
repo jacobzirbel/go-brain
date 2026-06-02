@@ -144,11 +144,11 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "search",
-		"description": "Full-text search within a single namespace; returns matching files with snippet previews. FTS5 syntax: loose keyword by default, \"double quotes\" for phrase, AND/OR/NOT for boolean. Also matches a file's basename, not its folder path. Use `path` for glob-scoped search. Excludes archived/ (pass include_archive=true)",
+		"description": "Full-text search; returns matching files with snippet previews. FTS5 syntax: loose keyword by default, \"double quotes\" for phrase, AND/OR/NOT for boolean. Also matches a file's basename, not its folder path. Use `path` for glob-scoped search. Pass namespace=\"*\" to search every namespace at once (hits include their namespace). Excludes archived/ (pass include_archive=true)",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"namespace":       map[string]any{"type": "string", "description": "Namespace to search. Empty or \"*\" is an error — no cross-namespace search."},
+				"namespace":       map[string]any{"type": "string", "description": "Namespace to search. Pass \"*\" to search across all namespaces."},
 				"query":           map[string]any{"type": "string", "description": "FTS5 MATCH expression. Loose keyword by default; \"phrase\" for adjacency; AND/OR/NOT for boolean."},
 				"path":            map[string]any{"type": "string", "description": "Optional doublestar glob over filename, e.g. \"tasks/**\" or \"decisions/*.md\"."},
 				"limit":           map[string]any{"type": "integer", "description": "Page size. Default 20, hard cap 100."},
@@ -579,8 +579,11 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 
 	case "search":
 		ns := nsStr("namespace")
-		if ns == "" || ns == "*" {
-			return map[string]string{"error": "namespace required, cross-namespace search not supported"}, true
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace (use \"*\" to search all namespaces)"}, true
+		}
+		if ns == "*" {
+			ns = ""
 		}
 		query := str("query")
 		if query == "" {

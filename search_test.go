@@ -303,11 +303,49 @@ func TestSearchTool_EmptyNamespaceErrors(t *testing.T) {
 	}
 }
 
-func TestSearchTool_StarNamespaceErrors(t *testing.T) {
+func TestSearchTool_StarNamespaceSearchesAll(t *testing.T) {
 	s := setupStore(t)
-	_, isErr := runTool(s, "search", map[string]any{"namespace": "*", "query": "x"})
-	if !isErr {
-		t.Error("namespace=* should error")
+	_ = s.Write("alpha", "x.md", "SHAREDnonce alpha-body")
+	_ = s.Write("beta", "y.md", "SHAREDnonce beta-body")
+	_ = s.Write("gamma", "z.md", "unrelated")
+	res, isErr := runTool(s, "search", map[string]any{"namespace": "*", "query": "SHAREDnonce"})
+	if isErr {
+		t.Fatalf("namespace=* should succeed; got error: %v", res)
+	}
+	m := res.(map[string]any)
+	hits := m["results"].([]SearchHit)
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits across namespaces; got %d: %+v", len(hits), hits)
+	}
+	gotNS := map[string]string{}
+	for _, h := range hits {
+		gotNS[h.Namespace] = h.Filename
+		if h.Namespace == "" {
+			t.Errorf("cross-NS hit missing namespace: %+v", h)
+		}
+	}
+	if gotNS["alpha"] != "x.md" || gotNS["beta"] != "y.md" {
+		t.Errorf("expected hits from alpha+beta; got %v", gotNS)
+	}
+}
+
+func TestFTS_CrossNamespaceStoreSearch(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("alpha", "x.md", "XNSnonce")
+	_ = s.Write("beta", "y.md", "XNSnonce")
+	hits, err := s.Search(SearchOptions{Namespace: "*", Query: "XNSnonce"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits; got %d", len(hits))
+	}
+	seen := map[string]bool{}
+	for _, h := range hits {
+		seen[h.Namespace] = true
+	}
+	if !seen["alpha"] || !seen["beta"] {
+		t.Errorf("expected alpha and beta in results; got %v", seen)
 	}
 }
 
