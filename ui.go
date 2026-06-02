@@ -551,14 +551,16 @@ func handleUIExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	includeArchive := r.URL.Query().Get("include_archive") == "1"
+	files = excludeDeleted(files)
+	if !includeArchive {
+		files = excludeArchive(files)
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+ns+`.zip"`)
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	for _, f := range files {
-		if isArchivePath(f.Filename) {
-			continue
-		}
 		content, _, err := store.Read(ns, f.Filename)
 		if err != nil {
 			continue
@@ -823,6 +825,7 @@ const uiTemplateSrc = `
     <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span>
     <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a>
     <a href="/ui/export/{{.Namespace}}.zip" style="font-size:12px;margin-left:4px">↓ download</a>
+    <a href="/ui/export/{{.Namespace}}.zip?include_archive=1" style="font-size:12px;margin-left:4px">↓ +archive</a>
   </h3>
   {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
 </div>
