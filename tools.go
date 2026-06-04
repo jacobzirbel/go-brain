@@ -198,6 +198,37 @@ var mcpTools = []map[string]any{
 	// 	},
 	// },
 	{
+		"name":        "append_to_section",
+		"description": "Append content to the end of a named section's body, just before the next heading at the same or shallower depth (deeper sub-sections stay inside). On section miss, errors and lists available slugs unless create_if_missing=true, in which case a new ## section is appended at end of file. Ambiguous matches (same heading appears more than once) error rather than guess.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace":         map[string]any{"type": "string"},
+				"filename":          map[string]any{"type": "string", "description": filenameDescription},
+				"section":           map[string]any{"type": "string", "description": "Canonical slug (\"phase-10-design\") or heading text (\"Phase 10 design\"). Ambiguous matches error; specify an exact slug to disambiguate."},
+				"content":           map[string]any{"type": "string"},
+				"create_if_missing": map[string]any{"type": "boolean", "description": "Create the section as a new ## heading at end of file when it doesn't exist. Defaults to false."},
+				"comment":           map[string]any{"type": "string", "description": commentDescription},
+			},
+			"required": []string{"namespace", "filename", "section", "content"},
+		},
+	},
+	{
+		"name":        "upsert_section",
+		"description": "Replace the entire body of a named section with new content, leaving its heading line untouched. If the section doesn't exist, creates it as a new ## section appended at end of file. Ambiguous matches (same heading appears more than once) error rather than guess.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+				"filename":  map[string]any{"type": "string", "description": filenameDescription},
+				"section":   map[string]any{"type": "string", "description": "Canonical slug or heading text. Ambiguous matches error; specify an exact slug to disambiguate."},
+				"content":   map[string]any{"type": "string", "description": "New body for the section (everything after the heading line). May include sub-headings. Replaces the old body entirely."},
+				"comment":   map[string]any{"type": "string", "description": commentDescription},
+			},
+			"required": []string{"namespace", "filename", "section", "content"},
+		},
+	},
+	{
 		"name":        "move_many",
 		"description": "mv (batch) - Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back.",
 		"inputSchema": map[string]any{
@@ -602,6 +633,180 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 			return map[string]string{"error": err.Error()}, true
 		}
 		return map[string]any{"results": hits}, false
+
+	case "append_to_section":
+		ns := nsStr("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
+		filename := str("filename")
+		sectionQ := str("section")
+		if sectionQ == "" {
+			return map[string]string{"error": "missing required argument: section"}, true
+		}
+		if _, present := args["content"]; !present || str("content") == "" {
+			return map[string]string{"error": "missing required argument: content"}, true
+		}
+		content := normalizeLineEndings(str("content"))
+		createIfMissing, _ := args["create_if_missing"].(bool)
+
+		existing, _, err := store.Read(ns, filename)
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "not found"}, true
+		}
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+
+		source := []byte(existing)
+		secs := parseSections(source)
+		found, conflicts, avail := findSectionForWrite(secs, sectionQ)
+
+		if len(conflicts) > 0 {
+			cfList := make([]map[string]string, len(conflicts))
+			for i, c := range conflicts {
+				cfList[i] = map[string]string{"slug": c.Slug, "heading": c.Heading}
+			}
+			return map[string]any{
+				"error":     fmt.Sprintf("ambiguous section %q: %d sections share this heading; specify an exact slug", sectionQ, len(conflicts)),
+				"conflicts": cfList,
+			}, true
+		}
+
+		var newFile string
+		var sectionSlug string
+
+		if found == nil {
+			if !createIfMissing {
+				return map[string]any{
+					"error":     fmt.Sprintf("section %q not found", sectionQ),
+					"available": avail,
+				}, true
+			}
+			// Create a new ## section at end of file then append content into it.
+			sectionSlug = slugifyHeading(sectionQ)
+			sep := "\n\n"
+			if len(existing) == 0 {
+				sep = ""
+			} else if existing[len(existing)-1] != '\n' {
+				sep = "\n\n"
+			}
+			if len(content) > 0 && content[len(content)-1] != '\n' {
+				content += "\n"
+			}
+			newFile = existing + sep + "## " + sectionQ + "\n\n" + content
+		} else {
+			sectionSlug = found.Slug
+			// Insert a separating newline + content before the section boundary.
+			prefix := string(source[:found.End])
+			if len(prefix) > 0 && prefix[len(prefix)-1] != '\n' {
+				prefix += "\n"
+			}
+			if len(content) > 0 && content[len(content)-1] != '\n' {
+				content += "\n"
+			}
+			newFile = prefix + "\n" + content + string(source[found.End:])
+		}
+
+		if err := store.Write(ns, filename, newFile); err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		if c := str("comment"); c != "" {
+			_ = store.InsertComment(ns, filename, c)
+		}
+
+		// Return the updated section bytes so the caller can verify.
+		updatedSecs := parseSections([]byte(newFile))
+		updatedFound, _, _ := findSectionForWrite(updatedSecs, sectionSlug)
+		var resultContent string
+		if updatedFound != nil {
+			resultContent = newFile[updatedFound.Start:updatedFound.End]
+		}
+		return map[string]any{"section": sectionSlug, "content": resultContent}, false
+
+	case "upsert_section":
+		ns := nsStr("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
+		filename := str("filename")
+		sectionQ := str("section")
+		if sectionQ == "" {
+			return map[string]string{"error": "missing required argument: section"}, true
+		}
+		content := normalizeLineEndings(str("content"))
+
+		existing, _, err := store.Read(ns, filename)
+		if errors.Is(err, ErrNotFound) {
+			return map[string]string{"error": "not found"}, true
+		}
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+
+		source := []byte(existing)
+		secs := parseSections(source)
+		found, conflicts, _ := findSectionForWrite(secs, sectionQ)
+
+		if len(conflicts) > 0 {
+			cfList := make([]map[string]string, len(conflicts))
+			for i, c := range conflicts {
+				cfList[i] = map[string]string{"slug": c.Slug, "heading": c.Heading}
+			}
+			return map[string]any{
+				"error":     fmt.Sprintf("ambiguous section %q: %d sections share this heading; specify an exact slug", sectionQ, len(conflicts)),
+				"conflicts": cfList,
+			}, true
+		}
+
+		var newFile string
+		var sectionSlug string
+
+		if found == nil {
+			// Create a new ## section at end of file.
+			sectionSlug = slugifyHeading(sectionQ)
+			sep := "\n\n"
+			if len(existing) == 0 {
+				sep = ""
+			} else if existing[len(existing)-1] != '\n' {
+				sep = "\n\n"
+			}
+			if len(content) > 0 && content[len(content)-1] != '\n' {
+				content += "\n"
+			}
+			newFile = existing + sep + "## " + sectionQ + "\n\n" + content
+		} else {
+			sectionSlug = found.Slug
+			// Find the end of the heading line (first \n after Start).
+			headingEnd := found.Start
+			for headingEnd < found.End && source[headingEnd] != '\n' {
+				headingEnd++
+			}
+			if headingEnd < found.End {
+				headingEnd++ // include the trailing \n of the heading line
+			}
+			// Ensure content ends with a newline so the file boundary is clean.
+			if len(content) > 0 && content[len(content)-1] != '\n' {
+				content += "\n"
+			}
+			newFile = string(source[:headingEnd]) + content + string(source[found.End:])
+		}
+
+		if err := store.Write(ns, filename, newFile); err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		if c := str("comment"); c != "" {
+			_ = store.InsertComment(ns, filename, c)
+		}
+
+		// Return the updated section bytes so the caller can verify.
+		updatedSecs := parseSections([]byte(newFile))
+		updatedFound, _, _ := findSectionForWrite(updatedSecs, sectionSlug)
+		var resultContent string
+		if updatedFound != nil {
+			resultContent = newFile[updatedFound.Start:updatedFound.End]
+		}
+		return map[string]any{"section": sectionSlug, "content": resultContent}, false
 
 	default:
 		return map[string]string{"error": fmt.Sprintf("unknown tool: %s", name)}, true
