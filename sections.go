@@ -186,6 +186,58 @@ func findSection(sections []section, query string) (*section, []string) {
 	return nil, avail
 }
 
+// findSectionForWrite is like findSection but errors on ambiguous heading-text
+// matches so write operations never silently target the wrong section.
+//
+// Tiers 1 and 2 (exact slug, legacy trimmed slug) are unambiguous by
+// construction — goldmark's dedup guarantees unique slugs — so they return
+// immediately. Tier 3 (heading-text fallback) collects all sections whose
+// heading normalises to the same slug and errors if more than one matches.
+//
+// Return semantics:
+//   - found != nil                → unambiguous match
+//   - found == nil, len(conflicts) > 0 → ambiguous; caller should report conflicts
+//   - found == nil, len(conflicts) == 0 → miss; avail lists available slugs
+func findSectionForWrite(sections []section, query string) (found *section, conflicts []section, avail []string) {
+	// Tier 1: exact slug
+	for i := range sections {
+		if sections[i].Slug == query {
+			return &sections[i], nil, nil
+		}
+	}
+	// Tier 2: legacy trimmed slug (cross-refs written before Phase 12b)
+	if trimmed := strings.Trim(query, "-"); trimmed != "" && trimmed != query {
+		for i := range sections {
+			if sections[i].Slug == trimmed {
+				return &sections[i], nil, nil
+			}
+		}
+	}
+	// Tier 3: heading-text fallback — check for ambiguity before committing
+	if slug := slugifyHeading(query); slug != "" {
+		var matches []section
+		for i := range sections {
+			if slugifyHeading(sections[i].Heading) == slug {
+				matches = append(matches, sections[i])
+			}
+		}
+		if len(matches) == 1 {
+			return &matches[0], nil, nil
+		}
+		if len(matches) > 1 {
+			return nil, matches, nil
+		}
+	}
+	// Miss
+	out := make([]string, 0, len(sections))
+	for _, s := range sections {
+		if s.Slug != "" {
+			out = append(out, s.Slug)
+		}
+	}
+	return nil, nil, out
+}
+
 // slugifyHeading mirrors goldmark's auto-heading-id algorithm (without dedup).
 // Used to normalize user-provided section queries when the exact-slug lookup misses.
 func slugifyHeading(s string) string {
