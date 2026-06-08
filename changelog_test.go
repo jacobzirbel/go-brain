@@ -17,13 +17,13 @@ import (
 
 func TestWriteTool_NoComment_NoCommentRow(t *testing.T) {
 	s := setupStore(t)
-	_, isErr := runTool(s, "write", map[string]any{
+	_, isErr := runTool(s, "create", map[string]any{
 		"namespace": "ns",
 		"filename":  "f.md",
 		"content":   "hello",
 	})
 	if isErr {
-		t.Fatal("write failed")
+		t.Fatal("create failed")
 	}
 	cs, err := s.ListComments("ns", "f.md", true, 100, 0)
 	if err != nil {
@@ -36,7 +36,7 @@ func TestWriteTool_NoComment_NoCommentRow(t *testing.T) {
 
 func TestWriteTool_WithComment_InsertsRow(t *testing.T) {
 	s := setupStore(t)
-	_, _ = runTool(s, "write", map[string]any{
+	_, _ = runTool(s, "create", map[string]any{
 		"namespace": "ns",
 		"filename":  "f.md",
 		"content":   "hello",

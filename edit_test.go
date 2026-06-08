@@ -131,7 +131,7 @@ func TestEditTool_FileNotFound(t *testing.T) {
 func TestWriteTool_MissingContent_Errors(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "important data")
-	_, isErr := runTool(s, "write", map[string]any{
+	_, isErr := runTool(s, "force_write", map[string]any{
 		"namespace": "ns",
 		"filename":  "f.md",
 	})
@@ -147,7 +147,7 @@ func TestWriteTool_MissingContent_Errors(t *testing.T) {
 func TestWriteTool_EmptyContent_Errors(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "important data")
-	_, isErr := runTool(s, "write", map[string]any{
+	_, isErr := runTool(s, "force_write", map[string]any{
 		"namespace": "ns",
 		"filename":  "f.md",
 		"content":   "",
@@ -193,7 +193,7 @@ func TestReadTool_MissingNamespace_Errors(t *testing.T) {
 func TestWriteTool_MissingNamespace_Errors(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "important data")
-	res, isErr := runTool(s, "write", map[string]any{
+	res, isErr := runTool(s, "force_write", map[string]any{
 		"filename": "f.md",
 		"content":  "replacement",
 	})
@@ -207,5 +207,72 @@ func TestWriteTool_MissingNamespace_Errors(t *testing.T) {
 	got, _, _ := s.Read("ns", "f.md")
 	if got != "important data" {
 		t.Errorf("file was modified despite missing namespace: %q", got)
+	}
+}
+
+func TestCreateTool_NewFile_Succeeds(t *testing.T) {
+	s := setupStore(t)
+	_, isErr := runTool(s, "create", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+		"content":   "hello",
+	})
+	if isErr {
+		t.Fatal("create failed on a new file")
+	}
+	if got, _, _ := s.Read("ns", "f.md"); got != "hello" {
+		t.Errorf("content = %q, want %q", got, "hello")
+	}
+}
+
+func TestCreateTool_ExistingFile_Errors(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "important data")
+	res, isErr := runTool(s, "create", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+		"content":   "clobber",
+	})
+	if !isErr {
+		t.Fatal("expected error when creating a file that already exists")
+	}
+	m := res.(map[string]string)
+	if !strings.Contains(m["error"], "exists") {
+		t.Errorf("error should mention the file exists, got: %q", m["error"])
+	}
+	if got, _, _ := s.Read("ns", "f.md"); got != "important data" {
+		t.Errorf("file was modified despite create-on-existing: %q", got)
+	}
+}
+
+func TestForceWriteTool_ExistingFile_Overwrites(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "old")
+	_, isErr := runTool(s, "force_write", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+		"content":   "new",
+	})
+	if isErr {
+		t.Fatal("force_write failed on an existing file")
+	}
+	if got, _, _ := s.Read("ns", "f.md"); got != "new" {
+		t.Errorf("content = %q, want %q", got, "new")
+	}
+}
+
+func TestForceWriteTool_MissingFile_Errors(t *testing.T) {
+	s := setupStore(t)
+	res, isErr := runTool(s, "force_write", map[string]any{
+		"namespace": "ns",
+		"filename":  "nope.md",
+		"content":   "data",
+	})
+	if !isErr {
+		t.Fatal("expected error when force_writing a file that does not exist")
+	}
+	m := res.(map[string]string)
+	if !strings.Contains(m["error"], "not found") {
+		t.Errorf("error should mention not found, got: %q", m["error"])
 	}
 }

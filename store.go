@@ -13,6 +13,7 @@ import (
 
 var (
 	ErrNotFound          = errors.New("not found")
+	ErrExists            = errors.New("file already exists")
 	ErrDestinationExists = errors.New("destination already exists")
 	ErrNoPending         = errors.New("no pending changes")
 )
@@ -70,6 +71,8 @@ type Store interface {
 	Read(namespace, filename string) (content, updatedAt string, err error)
 	ReadEntry(namespace, filename string) (content string, newVal sql.NullString, updatedAt string, err error)
 	Write(namespace, filename, content string) error
+	Create(namespace, filename, content string) error
+	ForceWrite(namespace, filename, content string) error
 	Append(namespace, filename, content string) error
 	Delete(namespace, filename string) error
 	Move(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
@@ -371,6 +374,71 @@ func (s *SQLiteStore) Write(namespace, filename, content string) error {
 			updated_at = datetime('now')
 		RETURNING rowid, COALESCE(new, content)
 	`, namespace, filename, content).Scan(&rowid, &body)
+	if err != nil {
+		return err
+	}
+	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Create inserts a brand-new entry, setting entries.new = content. Fails with
+// ErrExists if the file already exists — callers that mean to replace an
+// existing file should use ForceWrite. Wrapped in a tx so the existence check
+// and insert are atomic and the FTS index stays in lock-step.
+func (s *SQLiteStore) Create(namespace, filename, content string) error {
+	content = normalizeLineEndings(content)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM entries WHERE namespace=? AND filename=?`, namespace, filename).Scan(&exists)
+	if err == nil {
+		return ErrExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var rowid int64
+	var body string
+	err = tx.QueryRow(`
+		INSERT INTO entries (namespace, filename, new, updated_at)
+		VALUES (?, ?, ?, datetime('now'))
+		RETURNING rowid, COALESCE(new, content)
+	`, namespace, filename, content).Scan(&rowid, &body)
+	if err != nil {
+		return err
+	}
+	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ForceWrite sets entries.new = content on a file that already exists. Fails with
+// ErrNotFound if the file does not exist — callers that mean to create a new
+// file should use Create. Named to flag that blindly replacing a whole file is a
+// last resort; prefer Write-via-edit for surgical changes.
+func (s *SQLiteStore) ForceWrite(namespace, filename, content string) error {
+	content = normalizeLineEndings(content)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var rowid int64
+	var body string
+	err = tx.QueryRow(`
+		UPDATE entries SET new = ?, updated_at = datetime('now')
+		WHERE namespace=? AND filename=?
+		RETURNING rowid, COALESCE(new, content)
+	`, content, namespace, filename).Scan(&rowid, &body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return err
 	}

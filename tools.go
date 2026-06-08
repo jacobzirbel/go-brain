@@ -25,8 +25,22 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
-		"name":        "write",
-		"description": "Overwrite a file in a namespace (creates if not exists).",
+		"name":        "create",
+		"description": "Create a new file in a namespace. Fails if the file already exists — use force_write to replace an existing file, or edit for surgical changes.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+				"filename":  map[string]any{"type": "string", "description": filenameDescription},
+				"content":   map[string]any{"type": "string"},
+				"comment":   map[string]any{"type": "string", "description": commentDescription},
+			},
+			"required": []string{"namespace", "filename", "content"},
+		},
+	},
+	{
+		"name":        "force_write",
+		"description": "Overwrite an existing file in a namespace, replacing its entire contents. Fails if the file does not exist — use create for new files. Prefer edit for surgical changes; reach for force_write only when replacing the whole file.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -90,20 +104,20 @@ var mcpTools = []map[string]any{
 			"required": []string{"namespace"},
 		},
 	},
-	{
-		"name":        "copy",
-		"description": "Copy a file. If new_filename ends with '/', the source basename is appended (src=\"a/b.md\", new_filename=\"archived/\" → \"archived/b.md\"). Fails if the destination exists.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
-				"filename":      map[string]any{"type": "string", "description": "Source filename"},
-				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source)"},
-				"new_filename":  map[string]any{"type": "string", "description": "Destination filename. Trailing '/' copies into a folder using the source basename."},
-			},
-			"required": []string{"namespace", "filename", "new_filename"},
-		},
-	},
+	// {
+	// 	"name":        "copy",
+	// 	"description": "Copy a file. If new_filename ends with '/', the source basename is appended (src=\"a/b.md\", new_filename=\"archived/\" → \"archived/b.md\"). Fails if the destination exists.",
+	// 	"inputSchema": map[string]any{
+	// 		"type": "object",
+	// 		"properties": map[string]any{
+	// 			"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
+	// 			"filename":      map[string]any{"type": "string", "description": "Source filename"},
+	// 			"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source)"},
+	// 			"new_filename":  map[string]any{"type": "string", "description": "Destination filename. Trailing '/' copies into a folder using the source basename."},
+	// 		},
+	// 		"required": []string{"namespace", "filename", "new_filename"},
+	// 	},
+	// },
 	{
 		"name":        "archive",
 		"description": "Move a file to the archived/ prefix, excluded from search and list by default. Use for files you may reread but don't need day-to-day. Pass include_archive=true to see them again.",
@@ -339,7 +353,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		return map[string]bool{"ok": true}, false
 
-	case "write":
+	case "create":
 		ns := nsStr("namespace")
 		if ns == "" {
 			return map[string]string{"error": "missing required argument: namespace"}, true
@@ -348,7 +362,32 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if _, present := args["content"]; !present || str("content") == "" {
 			return map[string]string{"error": "missing required argument: content"}, true
 		}
-		if err := store.Write(ns, filename, str("content")); err != nil {
+		if err := store.Create(ns, filename, str("content")); err != nil {
+			if errors.Is(err, ErrExists) {
+				return map[string]string{"error": "file already exists"}, true
+			}
+			return map[string]string{"error": err.Error()}, true
+		}
+		if c := str("comment"); c != "" {
+			if err := store.InsertComment(ns, filename, c); err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
+		}
+		return map[string]bool{"ok": true}, false
+
+	case "force_write":
+		ns := nsStr("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
+		filename := str("filename")
+		if _, present := args["content"]; !present || str("content") == "" {
+			return map[string]string{"error": "missing required argument: content"}, true
+		}
+		if err := store.ForceWrite(ns, filename, str("content")); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return map[string]string{"error": "not found"}, true
+			}
 			return map[string]string{"error": err.Error()}, true
 		}
 		if c := str("comment"); c != "" {
