@@ -260,9 +260,44 @@ func TestArchive_CommentsStayAttached(t *testing.T) {
 	if isErr {
 		t.Fatal("archive failed")
 	}
+	// Archive is staged, not applied — the file moves on approval.
+	if _, _, err := s.Read("ns", "archived/f.md"); err != ErrNotFound {
+		t.Fatalf("archive should be staged, not applied; got err=%v", err)
+	}
+	if err := s.Review("ns", "f.md"); err != nil {
+		t.Fatalf("review failed: %v", err)
+	}
 	cs, _ := s.ListComments("ns", "archived/f.md", true, 100, 0)
 	if len(cs) != 1 || cs[0].Content != "stays" {
 		t.Errorf("comment should follow archived file; got %v", cs)
+	}
+}
+
+func TestRemoveTool_StagedUntilApproved(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "x")
+	_ = s.Review("ns", "f.md")
+
+	_, isErr := runTool(s, "remove", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+	})
+	if isErr {
+		t.Fatal("remove failed")
+	}
+	if _, _, err := s.Read("ns", "deleted/f.md"); err != ErrNotFound {
+		t.Fatalf("remove should be staged, not applied; got err=%v", err)
+	}
+	dstNS, dstName, ok, _ := s.PendingMove("ns", "f.md")
+	if !ok || dstNS != "ns" || dstName != "deleted/f.md" {
+		t.Fatalf("expected staged move to deleted/f.md, got ok=%v %s/%s", ok, dstNS, dstName)
+	}
+	// Rejecting keeps the file.
+	if err := s.Reject("ns", "f.md"); err != nil {
+		t.Fatalf("reject failed: %v", err)
+	}
+	if c, _, _ := s.Read("ns", "f.md"); c != "x" {
+		t.Fatalf("file should survive a rejected deletion: %q", c)
 	}
 }
 

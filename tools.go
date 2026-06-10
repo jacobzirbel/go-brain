@@ -120,7 +120,7 @@ var mcpTools = []map[string]any{
 	// },
 	{
 		"name":        "archive",
-		"description": "Move a file to the archived/ prefix, excluded from search and list by default. Use for files you may reread but don't need day-to-day. Pass include_archive=true to see them again.",
+		"description": "Stage a move of a file to the archived/ prefix for approval; applied when approved in the review UI. Archived files are excluded from search and list by default. Use for files you may reread but don't need day-to-day. Pass include_archive=true to see them again.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -132,7 +132,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "remove",
-		"description": "Delete a file",
+		"description": "Stage a deletion (move to the deleted/ prefix) for approval; applied when approved in the review UI.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -533,7 +533,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		srcFile := str("filename")
 		dstFile := "archived/" + srcFile
-		err := store.Move(srcNS, srcFile, srcNS, dstFile)
+		err := store.RequestMove([]MoveOp{{srcNS, srcFile, srcNS, dstFile}})
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
 		}
@@ -543,7 +543,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
-		return map[string]bool{"ok": true}, false
+		return map[string]any{"ok": true, "pending": true, "note": "archive staged; the file stays in place until approved in the review UI"}, false
 
 	case "remove":
 		srcNS := nsStr("namespace")
@@ -552,7 +552,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		srcFile := str("filename")
 		dstFile := "deleted/" + srcFile
-		err := store.Move(srcNS, srcFile, srcNS, dstFile)
+		err := store.RequestMove([]MoveOp{{srcNS, srcFile, srcNS, dstFile}})
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
 		}
@@ -562,7 +562,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
-		return map[string]bool{"ok": true}, false
+		return map[string]any{"ok": true, "pending": true, "note": "deletion staged; the file stays in place until approved in the review UI"}, false
 
 	case "copy":
 		srcNS := nsStr("namespace")
