@@ -144,7 +144,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "move",
-		"description": "Rename or move a file. Destination may be a different namespace and/or folder (use slashes to change folders). Fails if the destination exists.",
+		"description": "Stage a rename/move of a file for approval. The file stays at its current path until the move is approved in the review UI. Destination may be a different namespace and/or folder (use slashes to change folders). Fails if the destination exists.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -244,7 +244,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "move_many",
-		"description": "mv (batch) - Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back.",
+		"description": "mv (batch) - Stage multiple renames/moves atomically for approval in the review UI. Files stay at their current paths until each move is approved. If any staging fails (e.g. destination already exists, source not found), none are staged.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -599,7 +599,12 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if dstNS == "" {
 			dstNS = srcNS
 		}
-		err := store.Move(srcNS, str("filename"), dstNS, str("new_filename"))
+		err := store.RequestMove([]MoveOp{{
+			SrcNamespace: srcNS,
+			SrcFilename:  str("filename"),
+			DstNamespace: dstNS,
+			DstFilename:  str("new_filename"),
+		}})
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "source not found"}, true
 		}
@@ -609,7 +614,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
-		return map[string]bool{"ok": true}, false
+		return map[string]any{"ok": true, "pending": true, "note": "move staged; the file stays at its current path until approved in the review UI"}, false
 
 	case "move_many":
 		raw, _ := args["moves"].([]any)
@@ -635,17 +640,17 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 				DstFilename:  get("new_filename"),
 			})
 		}
-		err := store.MoveMany(ops)
+		err := store.RequestMove(ops)
 		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "a source file was not found; no moves were applied"}, true
+			return map[string]string{"error": "a source file was not found; no moves were staged"}, true
 		}
 		if errors.Is(err, ErrDestinationExists) {
-			return map[string]string{"error": "a destination already exists; no moves were applied"}, true
+			return map[string]string{"error": "a destination already exists; no moves were staged"}, true
 		}
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}
-		return map[string]any{"ok": true, "moved": len(ops)}, false
+		return map[string]any{"ok": true, "pending": true, "staged": len(ops), "note": "moves staged; files stay at their current paths until approved in the review UI"}, false
 
 	case "search":
 		ns := nsStr("namespace")

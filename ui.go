@@ -332,17 +332,25 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 	if hasPending {
 		displayed = newVal.String
 	}
+	moveNS, moveName, hasPendingMove, err := store.PendingMove(ns, name)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	data := map[string]any{
-		"Namespace":  ns,
-		"Filename":   name,
-		"Content":    content,
-		"New":        "",
-		"Displayed":  displayed,
-		"UpdatedAt":  updatedAt,
-		"Size":       len(displayed),
-		"HasPending": hasPending,
-		"IsArchived": isArchivePath(name),
-		"Chrome":     chrome(),
+		"Namespace":       ns,
+		"Filename":        name,
+		"Content":         content,
+		"New":             "",
+		"Displayed":       displayed,
+		"UpdatedAt":       updatedAt,
+		"Size":            len(displayed),
+		"HasPending":      hasPending,
+		"HasPendingMove":  hasPendingMove,
+		"MoveToNamespace": moveNS,
+		"MoveToFilename":  moveName,
+		"IsArchived":      isArchivePath(name),
+		"Chrome":          chrome(),
 	}
 	if hasPending {
 		data["New"] = newVal.String
@@ -409,9 +417,15 @@ func handleUIEditPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if alreadyReviewed {
+		// Approving may also apply a staged move — capture the destination
+		// first so the redirect lands on the file's new location.
+		moveNS, moveName, hasMove, _ := store.PendingMove(ns, name)
 		if err := store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if hasMove {
+			ns, name = moveNS, moveName
 		}
 	}
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
@@ -483,6 +497,9 @@ func handleUINewPost(w http.ResponseWriter, r *http.Request) {
 func handleUIReview(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
+	// Approving may also apply a staged move — capture the destination first
+	// so the redirect lands on the file's new location.
+	moveNS, moveName, hasMove, _ := store.PendingMove(ns, name)
 	if err := store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -490,6 +507,9 @@ func handleUIReview(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("return") == "inbox" {
 		http.Redirect(w, r, "/ui/inbox", http.StatusFound)
 		return
+	}
+	if hasMove {
+		ns, name = moveNS, moveName
 	}
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
@@ -912,8 +932,23 @@ const uiTemplateSrc = `
 </ul>{{end}}
 
 {{define "file"}}` + chromeStart + `
-<p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong>{{if .HasPending}} <span class="pending-dot">●</span>{{end}}</p>
+<p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong>{{if or .HasPending .HasPendingMove}} <span class="pending-dot">●</span>{{end}}</p>
 <p class="meta">Updated {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens</p>
+
+{{if .HasPendingMove}}
+<div class="review-banner">
+  <strong>Pending move → {{.MoveToNamespace}} / {{.MoveToFilename}}</strong>
+  {{if not .HasPending}}
+  <form class="inline" method="POST" action="/ui/review?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
+    <button type="submit" class="btn-success">Approve</button>
+  </form>
+  <form class="inline" method="POST" action="/ui/reject?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}"
+        onsubmit="return confirm('Reject pending move? The file will stay at its current path.')">
+    <button type="submit" class="btn-danger">Reject</button>
+  </form>
+  {{end}}
+</div>
+{{end}}
 
 {{if .HasPending}}
 <div class="review-banner">
@@ -1088,6 +1123,7 @@ const uiTemplateSrc = `
     <a href="/ui/file?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
       <strong>{{.Namespace}}</strong> / {{.Filename}}
     </a>
+    {{if .MoveToFilename}}<span class="pending-tag">→ {{.MoveToNamespace}} / {{.MoveToFilename}}</span>{{end}}
     <span class="pending-dot">●</span>
     <form method="POST" action="/ui/review?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}&return=inbox" style="display:inline">
       <button type="submit" class="btn-success">Approve</button>

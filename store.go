@@ -65,6 +65,8 @@ type PendingFile struct {
 	SortAt             string `json:"sort_at"`
 	CommentCount       int    `json:"comment_count"`
 	LastCommentSnippet string `json:"last_comment_snippet"`
+	MoveToNamespace    string `json:"move_to_namespace,omitempty"`
+	MoveToFilename     string `json:"move_to_filename,omitempty"`
 }
 
 type Store interface {
@@ -77,6 +79,8 @@ type Store interface {
 	Delete(namespace, filename string) error
 	Move(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
 	MoveMany(ops []MoveOp) error
+	RequestMove(ops []MoveOp) error
+	PendingMove(namespace, filename string) (dstNamespace, dstFilename string, ok bool, err error)
 	Copy(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
 	List(namespace string) ([]FileEntry, error)
 	ListNamespaces() ([]string, error)
@@ -108,12 +112,16 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	// entries schema:
 	//   content = last reviewed canonical value
 	//   new     = pending unreviewed (NULL when no pending review)
+	//   move_namespace/move_filename = staged move destination, applied on
+	//   approval (NULL when no pending move)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS entries (
-		namespace  TEXT NOT NULL,
-		filename   TEXT NOT NULL,
-		content    TEXT NOT NULL DEFAULT '',
-		new        TEXT,
-		updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		namespace      TEXT NOT NULL,
+		filename       TEXT NOT NULL,
+		content        TEXT NOT NULL DEFAULT '',
+		new            TEXT,
+		move_namespace TEXT,
+		move_filename  TEXT,
+		updated_at     DATETIME NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (namespace, filename)
 	)`); err != nil {
 		return nil, err
@@ -238,7 +246,8 @@ type execer interface {
 //   - interim Phase 6: had `old + new` (content was dropped) → re-add `content`,
 //     copy `old` → `content` (idempotent), drop `old`.
 //
-// End state: `content` (last reviewed) + `new` (pending, nullable).
+// End state: `content` (last reviewed) + `new` (pending, nullable) +
+// `move_namespace`/`move_filename` (staged move, nullable).
 // Safe to call repeatedly: every step is a no-op if the schema already matches.
 func migrateEntries(db *sql.DB) error {
 	cols, err := tableColumns(db, "entries")
@@ -249,6 +258,16 @@ func migrateEntries(db *sql.DB) error {
 	hasOld := cols["old"]
 	hasNew := cols["new"]
 
+	if !cols["move_namespace"] {
+		if _, err := db.Exec(`ALTER TABLE entries ADD COLUMN move_namespace TEXT`); err != nil {
+			return err
+		}
+	}
+	if !cols["move_filename"] {
+		if _, err := db.Exec(`ALTER TABLE entries ADD COLUMN move_filename TEXT`); err != nil {
+			return err
+		}
+	}
 	if !hasContent {
 		if _, err := db.Exec(`ALTER TABLE entries ADD COLUMN content TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
@@ -550,6 +569,84 @@ func (s *SQLiteStore) MoveMany(ops []MoveOp) error {
 	return tx.Commit()
 }
 
+// RequestMove stages moves for review instead of applying them: the file stays
+// at its source path with move_namespace/move_filename recording the requested
+// destination, until Review applies it or Reject discards it. A destination
+// must be free both as a real entry and as another entry's staged destination.
+// Atomic: any failure rolls back the whole batch.
+func (s *SQLiteStore) RequestMove(ops []MoveOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, op := range ops {
+		if op.SrcNamespace == op.DstNamespace && op.SrcFilename == op.DstFilename {
+			continue
+		}
+		var exists int
+		err := tx.QueryRow(
+			`SELECT 1 FROM entries WHERE namespace=? AND filename=?`,
+			op.DstNamespace, op.DstFilename,
+		).Scan(&exists)
+		if err == nil {
+			return ErrDestinationExists
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		err = tx.QueryRow(
+			`SELECT 1 FROM entries WHERE move_namespace=? AND move_filename=?
+			 AND NOT (namespace=? AND filename=?)`,
+			op.DstNamespace, op.DstFilename, op.SrcNamespace, op.SrcFilename,
+		).Scan(&exists)
+		if err == nil {
+			return ErrDestinationExists
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		res, err := tx.Exec(
+			`UPDATE entries SET move_namespace=?, move_filename=?, updated_at=datetime('now')
+			 WHERE namespace=? AND filename=?`,
+			op.DstNamespace, op.DstFilename, op.SrcNamespace, op.SrcFilename,
+		)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+	}
+	return tx.Commit()
+}
+
+// PendingMove reports the staged move destination for a file, if any.
+func (s *SQLiteStore) PendingMove(namespace, filename string) (string, string, bool, error) {
+	var dstNS, dstName sql.NullString
+	err := s.db.QueryRow(
+		`SELECT move_namespace, move_filename FROM entries WHERE namespace=? AND filename=?`,
+		namespace, filename,
+	).Scan(&dstNS, &dstName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, ErrNotFound
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	if !dstNS.Valid || !dstName.Valid {
+		return "", "", false, nil
+	}
+	return dstNS.String, dstName.String, true, nil
+}
+
 // Copy duplicates the entries row. Does NOT carry comments — the new file starts
 // with an empty history per the Phase 6 decision.
 func (s *SQLiteStore) Copy(srcNS, srcName, dstNS, dstName string) error {
@@ -630,7 +727,8 @@ func (s *SQLiteStore) ListNamespaces() ([]string, error) {
 
 func (s *SQLiteStore) List(namespace string) ([]FileEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT filename, updated_at, length(COALESCE(new, content)) AS size, new IS NOT NULL AS pending
+		SELECT filename, updated_at, length(COALESCE(new, content)) AS size,
+		       (new IS NOT NULL OR move_filename IS NOT NULL) AS pending
 		FROM entries WHERE namespace=? ORDER BY filename`,
 		namespace,
 	)
@@ -700,77 +798,97 @@ func (s *SQLiteStore) ListComments(namespace, filename string, includeReviewed b
 	return out, rows.Err()
 }
 
-// Review: new → old, clear new, mark file's open comments reviewed (atomic).
-// Errors with ErrNoPending if there are no pending changes.
+// Review: new → old, clear new, apply any staged move, mark file's open
+// comments reviewed (atomic). Errors with ErrNoPending if there is neither a
+// pending content change nor a staged move. Errors with ErrDestinationExists
+// if a staged move's destination has been taken since it was staged.
 func (s *SQLiteStore) Review(namespace, filename string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var newVal sql.NullString
+	var newVal, moveNS, moveName sql.NullString
 	err = tx.QueryRow(
-		`SELECT new FROM entries WHERE namespace=? AND filename=?`,
+		`SELECT new, move_namespace, move_filename FROM entries WHERE namespace=? AND filename=?`,
 		namespace, filename,
-	).Scan(&newVal)
+	).Scan(&newVal, &moveNS, &moveName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if !newVal.Valid {
+	hasMove := moveNS.Valid && moveName.Valid
+	if !newVal.Valid && !hasMove {
 		return ErrNoPending
 	}
-	var rowid int64
-	var body string
-	if err := tx.QueryRow(
-		`UPDATE entries SET content = new, new = NULL WHERE namespace=? AND filename=?
-		 RETURNING rowid, content`,
-		namespace, filename,
-	).Scan(&rowid, &body); err != nil {
-		return err
+	if newVal.Valid {
+		var rowid int64
+		var body string
+		if err := tx.QueryRow(
+			`UPDATE entries SET content = new, new = NULL WHERE namespace=? AND filename=?
+			 RETURNING rowid, content`,
+			namespace, filename,
+		).Scan(&rowid, &body); err != nil {
+			return err
+		}
+		// Body is conceptually unchanged (COALESCE(new,content) == previous new ==
+		// current content) but the column transition counts as a write — re-emit
+		// FTS to stay consistent with the rest of the sync path.
+		if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+			return err
+		}
 	}
+	// Mark comments reviewed at the pre-move location; moveInTx carries them
+	// (already reviewed) to the destination.
 	if _, err := tx.Exec(
 		`UPDATE comments SET reviewed=1 WHERE namespace=? AND filename=? AND reviewed=0`,
 		namespace, filename,
 	); err != nil {
 		return err
 	}
-	// Body is conceptually unchanged (COALESCE(new,content) == previous new ==
-	// current content) but the column transition counts as a write — re-emit
-	// FTS to stay consistent with the rest of the sync path.
-	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
-		return err
+	if hasMove {
+		if err := moveInTx(tx, MoveOp{namespace, filename, moveNS.String, moveName.String}); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE entries SET move_namespace=NULL, move_filename=NULL WHERE namespace=? AND filename=?`,
+			moveNS.String, moveName.String,
+		); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
 
-// Reject: clear new (revert to last reviewed `content`), mark open comments reviewed.
+// Reject: clear new (revert to last reviewed `content`), discard any staged
+// move, mark open comments reviewed.
 func (s *SQLiteStore) Reject(namespace, filename string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var newVal sql.NullString
+	var newVal, moveNS, moveName sql.NullString
 	err = tx.QueryRow(
-		`SELECT new FROM entries WHERE namespace=? AND filename=?`,
+		`SELECT new, move_namespace, move_filename FROM entries WHERE namespace=? AND filename=?`,
 		namespace, filename,
-	).Scan(&newVal)
+	).Scan(&newVal, &moveNS, &moveName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if !newVal.Valid {
+	if !newVal.Valid && !(moveNS.Valid && moveName.Valid) {
 		return ErrNoPending
 	}
 	var rowid int64
 	var body string
 	if err := tx.QueryRow(
-		`UPDATE entries SET new = NULL WHERE namespace=? AND filename=?
+		`UPDATE entries SET new = NULL, move_namespace = NULL, move_filename = NULL
+		 WHERE namespace=? AND filename=?
 		 RETURNING rowid, content`,
 		namespace, filename,
 	).Scan(&rowid, &body); err != nil {
@@ -789,19 +907,22 @@ func (s *SQLiteStore) Reject(namespace, filename string) error {
 	return tx.Commit()
 }
 
-// PendingFiles returns every file with new IS NOT NULL, ordered by
-// most-recent-comment created_at DESC (falls back to entries.updated_at).
+// PendingFiles returns every file needing review — pending content (new IS
+// NOT NULL) or a staged move — ordered by most-recent-comment created_at DESC
+// (falls back to entries.updated_at).
 func (s *SQLiteStore) PendingFiles() ([]PendingFile, error) {
 	rows, err := s.db.Query(`
 		SELECT
 			e.namespace,
 			e.filename,
 			e.updated_at,
+			e.move_namespace,
+			e.move_filename,
 			(SELECT COUNT(*) FROM comments c WHERE c.namespace=e.namespace AND c.filename=e.filename) AS comment_count,
 			(SELECT content FROM comments c2 WHERE c2.namespace=e.namespace AND c2.filename=e.filename ORDER BY c2.created_at DESC, c2.id DESC LIMIT 1) AS last_comment,
 			(SELECT MAX(c3.created_at) FROM comments c3 WHERE c3.namespace=e.namespace AND c3.filename=e.filename) AS last_at
 		FROM entries e
-		WHERE e.new IS NOT NULL
+		WHERE e.new IS NOT NULL OR e.move_filename IS NOT NULL
 	`)
 	if err != nil {
 		return nil, err
@@ -810,9 +931,13 @@ func (s *SQLiteStore) PendingFiles() ([]PendingFile, error) {
 	out := []PendingFile{}
 	for rows.Next() {
 		var p PendingFile
-		var lastComment, lastAt sql.NullString
-		if err := rows.Scan(&p.Namespace, &p.Filename, &p.UpdatedAt, &p.CommentCount, &lastComment, &lastAt); err != nil {
+		var moveNS, moveName, lastComment, lastAt sql.NullString
+		if err := rows.Scan(&p.Namespace, &p.Filename, &p.UpdatedAt, &moveNS, &moveName, &p.CommentCount, &lastComment, &lastAt); err != nil {
 			return nil, err
+		}
+		if moveNS.Valid && moveName.Valid {
+			p.MoveToNamespace = moveNS.String
+			p.MoveToFilename = moveName.String
 		}
 		if lastComment.Valid {
 			p.LastCommentSnippet = lastComment.String
@@ -840,13 +965,13 @@ func (s *SQLiteStore) PendingFiles() ([]PendingFile, error) {
 
 func (s *SQLiteStore) GlobalPendingCount() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE new IS NOT NULL`).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE new IS NOT NULL OR move_filename IS NOT NULL`).Scan(&n)
 	return n, err
 }
 
 func (s *SQLiteStore) NamespacePendingCount(namespace string) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE namespace=? AND new IS NOT NULL`, namespace).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE namespace=? AND (new IS NOT NULL OR move_filename IS NOT NULL)`, namespace).Scan(&n)
 	return n, err
 }
 

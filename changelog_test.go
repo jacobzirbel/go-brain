@@ -473,11 +473,13 @@ func TestSchema_EntriesColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"namespace":  true,
-		"filename":   true,
-		"content":    true,
-		"new":        true,
-		"updated_at": true,
+		"namespace":      true,
+		"filename":       true,
+		"content":        true,
+		"new":            true,
+		"move_namespace": true,
+		"move_filename":  true,
+		"updated_at":     true,
 	}
 	for k := range want {
 		if !cols[k] {
