@@ -260,12 +260,9 @@ func TestArchive_CommentsStayAttached(t *testing.T) {
 	if isErr {
 		t.Fatal("archive failed")
 	}
-	// Archive is staged, not applied — the file moves on approval.
-	if _, _, err := s.Read("ns", "archived/f.md"); err != ErrNotFound {
-		t.Fatalf("archive should be staged, not applied; got err=%v", err)
-	}
-	if err := s.Review("ns", "f.md"); err != nil {
-		t.Fatalf("review failed: %v", err)
+	// Archive applies immediately; the comment follows the file to archived/.
+	if _, _, err := s.Read("ns", "archived/f.md"); err != nil {
+		t.Fatalf("archive should apply immediately; got err=%v", err)
 	}
 	cs, _ := s.ListComments("ns", "archived/f.md", true, 100, 0)
 	if len(cs) != 1 || cs[0].Content != "stays" {
@@ -273,7 +270,7 @@ func TestArchive_CommentsStayAttached(t *testing.T) {
 	}
 }
 
-func TestRemoveTool_StagedUntilApproved(t *testing.T) {
+func TestRemoveTool_AppliesImmediatelyRevertible(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "x")
 	_ = s.Review("ns", "f.md")
@@ -285,19 +282,23 @@ func TestRemoveTool_StagedUntilApproved(t *testing.T) {
 	if isErr {
 		t.Fatal("remove failed")
 	}
-	if _, _, err := s.Read("ns", "deleted/f.md"); err != ErrNotFound {
-		t.Fatalf("remove should be staged, not applied; got err=%v", err)
+	// Move to deleted/ takes effect immediately, with a revert target.
+	if _, _, err := s.Read("ns", "deleted/f.md"); err != nil {
+		t.Fatalf("remove should apply immediately; got err=%v", err)
 	}
-	dstNS, dstName, ok, _ := s.PendingMove("ns", "f.md")
-	if !ok || dstNS != "ns" || dstName != "deleted/f.md" {
-		t.Fatalf("expected staged move to deleted/f.md, got ok=%v %s/%s", ok, dstNS, dstName)
+	fromNS, fromName, ok, _ := s.MovedFrom("ns", "deleted/f.md")
+	if !ok || fromNS != "ns" || fromName != "f.md" {
+		t.Fatalf("expected revert target ns/f.md, got ok=%v %s/%s", ok, fromNS, fromName)
 	}
-	// Rejecting keeps the file.
-	if err := s.Reject("ns", "f.md"); err != nil {
+	// Rejecting brings the file back.
+	if err := s.Reject("ns", "deleted/f.md"); err != nil {
 		t.Fatalf("reject failed: %v", err)
 	}
 	if c, _, _ := s.Read("ns", "f.md"); c != "x" {
-		t.Fatalf("file should survive a rejected deletion: %q", c)
+		t.Fatalf("file should be restored after a rejected deletion: %q", c)
+	}
+	if _, _, err := s.Read("ns", "deleted/f.md"); err != ErrNotFound {
+		t.Fatal("deleted/ copy should be gone after reject")
 	}
 }
 
@@ -508,13 +509,13 @@ func TestSchema_EntriesColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"namespace":      true,
-		"filename":       true,
-		"content":        true,
-		"new":            true,
-		"move_namespace": true,
-		"move_filename":  true,
-		"updated_at":     true,
+		"namespace":            true,
+		"filename":             true,
+		"content":              true,
+		"new":                  true,
+		"moved_from_namespace": true,
+		"moved_from_filename":  true,
+		"updated_at":           true,
 	}
 	for k := range want {
 		if !cols[k] {

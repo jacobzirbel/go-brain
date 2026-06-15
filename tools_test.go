@@ -17,11 +17,12 @@ func setupStore(t *testing.T) *SQLiteStore {
 	return s
 }
 
-func TestMoveTool_StagesPendingMove(t *testing.T) {
+func TestMoveTool_AppliesImmediatelyAndIsRevertible(t *testing.T) {
 	s := setupStore(t)
 	if err := s.Write("ns", "old/path.md", "hi"); err != nil {
 		t.Fatal(err)
 	}
+	_ = s.Review("ns", "old/path.md")
 	res, isErr := runTool(s, "move", map[string]any{
 		"namespace":    "ns",
 		"filename":     "old/path.md",
@@ -30,24 +31,7 @@ func TestMoveTool_StagesPendingMove(t *testing.T) {
 	if isErr {
 		t.Fatalf("move returned error: %v", res)
 	}
-	// Staged, not applied: file is still at the source path.
-	if _, _, err := s.Read("ns", "old/path.md"); err != nil {
-		t.Fatalf("source should still exist before approval: %v", err)
-	}
-	if _, _, err := s.Read("ns", "new/path.md"); err != ErrNotFound {
-		t.Fatalf("destination should not exist before approval, got err=%v", err)
-	}
-	dstNS, dstName, ok, err := s.PendingMove("ns", "old/path.md")
-	if err != nil || !ok {
-		t.Fatalf("expected staged move, got ok=%v err=%v", ok, err)
-	}
-	if dstNS != "ns" || dstName != "new/path.md" {
-		t.Fatalf("staged destination wrong: %s/%s", dstNS, dstName)
-	}
-	// Approval applies it.
-	if err := s.Review("ns", "old/path.md"); err != nil {
-		t.Fatalf("review failed: %v", err)
-	}
+	// Move took effect immediately: file lives at the destination, source gone.
 	content, _, err := s.Read("ns", "new/path.md")
 	if err != nil {
 		t.Fatalf("read new path failed: %v", err)
@@ -56,10 +40,28 @@ func TestMoveTool_StagesPendingMove(t *testing.T) {
 		t.Fatalf("content lost: %q", content)
 	}
 	if _, _, err := s.Read("ns", "old/path.md"); err != ErrNotFound {
-		t.Fatalf("expected old path gone, got err=%v", err)
+		t.Fatalf("source should be gone, got err=%v", err)
 	}
-	if _, _, ok, _ := s.PendingMove("ns", "new/path.md"); ok {
-		t.Fatal("staged move should be cleared after approval")
+	// The revert target points back at the origin until reviewed.
+	fromNS, fromName, ok, err := s.MovedFrom("ns", "new/path.md")
+	if err != nil || !ok {
+		t.Fatalf("expected revert target, got ok=%v err=%v", ok, err)
+	}
+	if fromNS != "ns" || fromName != "old/path.md" {
+		t.Fatalf("revert target wrong: %s/%s", fromNS, fromName)
+	}
+	// Reject moves it back.
+	if err := s.Reject("ns", "new/path.md"); err != nil {
+		t.Fatalf("reject failed: %v", err)
+	}
+	if c, _, _ := s.Read("ns", "old/path.md"); c != "hi" {
+		t.Fatalf("file not moved back: %q", c)
+	}
+	if _, _, err := s.Read("ns", "new/path.md"); err != ErrNotFound {
+		t.Fatal("destination should be gone after reject")
+	}
+	if _, _, ok, _ := s.MovedFrom("ns", "old/path.md"); ok {
+		t.Fatal("revert target should be cleared after reject")
 	}
 }
 
@@ -75,15 +77,15 @@ func TestMoveTool_CrossNamespace(t *testing.T) {
 	if isErr {
 		t.Fatalf("move returned error: %v", res)
 	}
-	if err := s.Review("a", "f.md"); err != nil {
-		t.Fatalf("review failed: %v", err)
-	}
 	if _, _, err := s.Read("b", "folder/f.md"); err != nil {
-		t.Fatalf("cross-namespace move failed: %v", err)
+		t.Fatalf("cross-namespace move should apply immediately: %v", err)
+	}
+	if _, _, err := s.Read("a", "f.md"); err != ErrNotFound {
+		t.Fatalf("source should be gone, got %v", err)
 	}
 }
 
-func TestMoveTool_RejectKeepsFileInPlace(t *testing.T) {
+func TestMoveTool_ApproveBlessesMove(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "x")
 	_ = s.Review("ns", "f.md")
@@ -94,17 +96,18 @@ func TestMoveTool_RejectKeepsFileInPlace(t *testing.T) {
 	}); isErr {
 		t.Fatal("move tool errored")
 	}
-	if err := s.Reject("ns", "f.md"); err != nil {
-		t.Fatalf("reject failed: %v", err)
+	if err := s.Review("ns", "elsewhere.md"); err != nil {
+		t.Fatalf("review failed: %v", err)
 	}
-	if _, _, ok, _ := s.PendingMove("ns", "f.md"); ok {
-		t.Fatal("staged move should be cleared after reject")
+	// Approving clears the revert target; the file stays at the destination.
+	if _, _, ok, _ := s.MovedFrom("ns", "elsewhere.md"); ok {
+		t.Fatal("revert target should be cleared after approval")
 	}
-	if c, _, _ := s.Read("ns", "f.md"); c != "x" {
-		t.Fatalf("file should be untouched: %q", c)
+	if c, _, _ := s.Read("ns", "elsewhere.md"); c != "x" {
+		t.Fatalf("file should remain at destination: %q", c)
 	}
-	if _, _, err := s.Read("ns", "elsewhere.md"); err != ErrNotFound {
-		t.Fatal("destination should not exist after reject")
+	if _, _, err := s.Read("ns", "f.md"); err != ErrNotFound {
+		t.Fatal("source should stay gone after approval")
 	}
 }
 
@@ -164,18 +167,13 @@ func TestMoveManyTool_ArchivesAFolder(t *testing.T) {
 	if isErr {
 		t.Fatalf("move_many returned error: %v", res)
 	}
-	// Staged only — sources still in place until each is approved.
-	for _, name := range []string{"journal/may-22.md", "journal/may-23.md"} {
-		if _, _, ok, _ := s.PendingMove("brain", name); !ok {
-			t.Fatalf("expected staged move on %s", name)
-		}
-		if err := s.Review("brain", name); err != nil {
-			t.Fatalf("review %s failed: %v", name, err)
-		}
-	}
+	// Moves applied immediately; each carries a revert target until approved.
 	for _, name := range []string{"archive/journal/may-22.md", "archive/journal/may-23.md"} {
 		if _, _, err := s.Read("brain", name); err != nil {
 			t.Fatalf("missing destination %s: %v", name, err)
+		}
+		if _, _, ok, _ := s.MovedFrom("brain", name); !ok {
+			t.Fatalf("expected revert target on %s", name)
 		}
 	}
 	if _, _, err := s.Read("brain", "journal/may-22.md"); err != ErrNotFound {
@@ -200,11 +198,9 @@ func TestMoveManyTool_RollsBackOnFailure(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected error from move_many")
 	}
-	if _, _, ok, _ := s.PendingMove("ns", "a.md"); ok {
-		t.Fatal("first staging not rolled back: a.md still has a staged move")
-	}
+	// Whole batch rolled back: first move undone, a.md still at its origin.
 	if c, _, _ := s.Read("ns", "a.md"); c != "A" {
-		t.Fatalf("a.md content changed: %q", c)
+		t.Fatalf("first move not rolled back, a.md content: %q", c)
 	}
 	if _, _, err := s.Read("ns", "archive/a.md"); err != ErrNotFound {
 		t.Fatal("expected archive/a.md to not exist after rollback")
@@ -214,53 +210,81 @@ func TestMoveManyTool_RollsBackOnFailure(t *testing.T) {
 	}
 }
 
-func TestRequestMove_DuplicateStagedDestination(t *testing.T) {
-	s := setupStore(t)
-	_ = s.Write("ns", "a.md", "A")
-	_ = s.Write("ns", "b.md", "B")
-	if err := s.RequestMove([]MoveOp{{"ns", "a.md", "ns", "dst.md"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RequestMove([]MoveOp{{"ns", "b.md", "ns", "dst.md"}}); err != ErrDestinationExists {
-		t.Fatalf("expected ErrDestinationExists for already-staged destination, got %v", err)
-	}
-	// Restaging the same file to the same destination is fine (idempotent).
-	if err := s.RequestMove([]MoveOp{{"ns", "a.md", "ns", "dst.md"}}); err != nil {
-		t.Fatalf("restaging same move should succeed: %v", err)
-	}
-}
-
-func TestReview_StagedMoveDestinationTaken(t *testing.T) {
+func TestMoveForReview_RevertTargetSurvivesRepeatedMoves(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "a.md", "A")
 	_ = s.Review("ns", "a.md")
-	if err := s.RequestMove([]MoveOp{{"ns", "a.md", "ns", "dst.md"}}); err != nil {
+	// A → B → C without review in between.
+	if err := s.MoveForReview([]MoveOp{{"ns", "a.md", "ns", "b.md"}}); err != nil {
 		t.Fatal(err)
 	}
-	// Destination appears after staging.
-	_ = s.Write("ns", "dst.md", "taken")
-	if err := s.Review("ns", "a.md"); err != ErrDestinationExists {
-		t.Fatalf("expected ErrDestinationExists at approval, got %v", err)
+	if err := s.MoveForReview([]MoveOp{{"ns", "b.md", "ns", "c.md"}}); err != nil {
+		t.Fatal(err)
 	}
-	// Nothing applied: source intact, staged move still recorded.
+	// Revert target stays the last reviewed location (a.md), not the intermediate.
+	fromNS, fromName, ok, _ := s.MovedFrom("ns", "c.md")
+	if !ok || fromNS != "ns" || fromName != "a.md" {
+		t.Fatalf("expected revert target ns/a.md, got ok=%v %s/%s", ok, fromNS, fromName)
+	}
+	// Reject lands back at the original reviewed location.
+	if err := s.Reject("ns", "c.md"); err != nil {
+		t.Fatalf("reject failed: %v", err)
+	}
 	if c, _, _ := s.Read("ns", "a.md"); c != "A" {
-		t.Fatalf("source corrupted: %q", c)
-	}
-	if _, _, ok, _ := s.PendingMove("ns", "a.md"); !ok {
-		t.Fatal("staged move should survive a failed approval")
+		t.Fatalf("expected file back at a.md, got %q", c)
 	}
 }
 
-func TestReview_AppliesContentAndMoveTogether(t *testing.T) {
+func TestMoveForReview_MoveBackToOriginClearsPointer(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "a.md", "A")
+	_ = s.Review("ns", "a.md")
+	if err := s.MoveForReview([]MoveOp{{"ns", "a.md", "ns", "b.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Moving back onto the reviewed location makes it clean again — no pending.
+	if err := s.MoveForReview([]MoveOp{{"ns", "b.md", "ns", "a.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := s.MovedFrom("ns", "a.md"); ok {
+		t.Fatal("expected revert target cleared after moving back to origin")
+	}
+	if n, _ := s.GlobalPendingCount(); n != 0 {
+		t.Fatalf("expected 0 pending after round-trip, got %d", n)
+	}
+}
+
+func TestReject_RevertTargetTaken(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "a.md", "A")
+	_ = s.Review("ns", "a.md")
+	if err := s.MoveForReview([]MoveOp{{"ns", "a.md", "ns", "b.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Someone occupies the original location before the move is rejected.
+	_ = s.Write("ns", "a.md", "squatter")
+	if err := s.Reject("ns", "b.md"); err != ErrDestinationExists {
+		t.Fatalf("expected ErrDestinationExists rejecting onto occupied origin, got %v", err)
+	}
+	// Nothing undone: file still at b.md with its revert target intact.
+	if c, _, _ := s.Read("ns", "b.md"); c != "A" {
+		t.Fatalf("file should remain at b.md: %q", c)
+	}
+	if _, _, ok, _ := s.MovedFrom("ns", "b.md"); !ok {
+		t.Fatal("revert target should survive a failed reject")
+	}
+}
+
+func TestReview_BlessesContentAndMoveTogether(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "v1")
 	_ = s.Review("ns", "f.md")
-	_ = s.Write("ns", "f.md", "v2")
+	_ = s.Write("ns", "f.md", "v2") // pending content
 	_ = s.InsertComment("ns", "f.md", "edit + rename")
-	if err := s.RequestMove([]MoveOp{{"ns", "f.md", "ns", "renamed.md"}}); err != nil {
+	if err := s.MoveForReview([]MoveOp{{"ns", "f.md", "ns", "renamed.md"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Review("ns", "f.md"); err != nil {
+	if err := s.Review("ns", "renamed.md"); err != nil {
 		t.Fatalf("review failed: %v", err)
 	}
 	content, newVal, _, err := s.ReadEntry("ns", "renamed.md")
@@ -270,38 +294,68 @@ func TestReview_AppliesContentAndMoveTogether(t *testing.T) {
 	if content != "v2" || newVal.Valid {
 		t.Fatalf("expected content=v2 new=NULL at destination, got %q / %v", content, newVal)
 	}
+	if _, _, ok, _ := s.MovedFrom("ns", "renamed.md"); ok {
+		t.Fatal("revert target should be cleared after approval")
+	}
 	comments, _ := s.ListComments("ns", "renamed.md", true, 20, 0)
 	if len(comments) != 1 || !comments[0].Reviewed {
 		t.Fatalf("expected 1 reviewed comment at destination, got %+v", comments)
 	}
 }
 
-func TestPendingCounts_IncludeStagedMoves(t *testing.T) {
+func TestReject_UndoesContentAndMoveTogether(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "v1")
+	_ = s.Review("ns", "f.md")
+	_ = s.Write("ns", "f.md", "v2")
+	if err := s.MoveForReview([]MoveOp{{"ns", "f.md", "ns", "renamed.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reject("ns", "renamed.md"); err != nil {
+		t.Fatalf("reject failed: %v", err)
+	}
+	// File back at origin with content reverted to the last reviewed value.
+	content, newVal, _, err := s.ReadEntry("ns", "f.md")
+	if err != nil {
+		t.Fatalf("file not moved back: %v", err)
+	}
+	if content != "v1" || newVal.Valid {
+		t.Fatalf("expected content=v1 new=NULL after reject, got %q / %v", content, newVal)
+	}
+	if _, _, err := s.Read("ns", "renamed.md"); err != ErrNotFound {
+		t.Fatal("destination should be gone after reject")
+	}
+}
+
+func TestPendingCounts_IncludeUnreviewedMoves(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "x")
 	_ = s.Review("ns", "f.md")
 	if n, _ := s.GlobalPendingCount(); n != 0 {
 		t.Fatalf("expected 0 pending, got %d", n)
 	}
-	if err := s.RequestMove([]MoveOp{{"ns", "f.md", "ns", "g.md"}}); err != nil {
+	if err := s.MoveForReview([]MoveOp{{"ns", "f.md", "ns", "g.md"}}); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := s.GlobalPendingCount(); n != 1 {
-		t.Fatalf("expected 1 pending after staging move, got %d", n)
+		t.Fatalf("expected 1 pending after move, got %d", n)
 	}
 	if n, _ := s.NamespacePendingCount("ns"); n != 1 {
 		t.Fatalf("expected namespace pending 1, got %d", n)
 	}
 	files, _ := s.List("ns")
 	if len(files) != 1 || !files[0].HasPending {
-		t.Fatalf("List should flag staged move as pending: %+v", files)
+		t.Fatalf("List should flag unreviewed move as pending: %+v", files)
 	}
 	pending, _ := s.PendingFiles()
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending file, got %d", len(pending))
 	}
-	if pending[0].MoveToNamespace != "ns" || pending[0].MoveToFilename != "g.md" {
-		t.Fatalf("PendingFiles should carry move destination, got %+v", pending[0])
+	if pending[0].Filename != "g.md" {
+		t.Fatalf("pending file should be at its new location, got %q", pending[0].Filename)
+	}
+	if pending[0].MovedFromNamespace != "ns" || pending[0].MovedFromFilename != "f.md" {
+		t.Fatalf("PendingFiles should carry revert target, got %+v", pending[0])
 	}
 }
 
