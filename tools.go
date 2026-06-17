@@ -533,7 +533,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		srcFile := str("filename")
 		dstFile := "archived/" + srcFile
-		err := store.Move(srcNS, srcFile, srcNS, dstFile)
+		err := store.MoveForReview([]MoveOp{{srcNS, srcFile, srcNS, dstFile}})
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
 		}
@@ -552,7 +552,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		srcFile := str("filename")
 		dstFile := "deleted/" + srcFile
-		err := store.Move(srcNS, srcFile, srcNS, dstFile)
+		err := store.MoveForReview([]MoveOp{{srcNS, srcFile, srcNS, dstFile}})
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "not found"}, true
 		}
@@ -599,7 +599,12 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		if dstNS == "" {
 			dstNS = srcNS
 		}
-		err := store.Move(srcNS, str("filename"), dstNS, str("new_filename"))
+		err := store.MoveForReview([]MoveOp{{
+			SrcNamespace: srcNS,
+			SrcFilename:  str("filename"),
+			DstNamespace: dstNS,
+			DstFilename:  str("new_filename"),
+		}})
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "source not found"}, true
 		}
@@ -635,7 +640,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 				DstFilename:  get("new_filename"),
 			})
 		}
-		err := store.MoveMany(ops)
+		err := store.MoveForReview(ops)
 		if errors.Is(err, ErrNotFound) {
 			return map[string]string{"error": "a source file was not found; no moves were applied"}, true
 		}

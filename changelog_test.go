@@ -260,9 +260,45 @@ func TestArchive_CommentsStayAttached(t *testing.T) {
 	if isErr {
 		t.Fatal("archive failed")
 	}
+	// Archive applies immediately; the comment follows the file to archived/.
+	if _, _, err := s.Read("ns", "archived/f.md"); err != nil {
+		t.Fatalf("archive should apply immediately; got err=%v", err)
+	}
 	cs, _ := s.ListComments("ns", "archived/f.md", true, 100, 0)
 	if len(cs) != 1 || cs[0].Content != "stays" {
 		t.Errorf("comment should follow archived file; got %v", cs)
+	}
+}
+
+func TestRemoveTool_AppliesImmediatelyRevertible(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "f.md", "x")
+	_ = s.Review("ns", "f.md")
+
+	_, isErr := runTool(s, "remove", map[string]any{
+		"namespace": "ns",
+		"filename":  "f.md",
+	})
+	if isErr {
+		t.Fatal("remove failed")
+	}
+	// Move to deleted/ takes effect immediately, with a revert target.
+	if _, _, err := s.Read("ns", "deleted/f.md"); err != nil {
+		t.Fatalf("remove should apply immediately; got err=%v", err)
+	}
+	fromNS, fromName, ok, _ := s.MovedFrom("ns", "deleted/f.md")
+	if !ok || fromNS != "ns" || fromName != "f.md" {
+		t.Fatalf("expected revert target ns/f.md, got ok=%v %s/%s", ok, fromNS, fromName)
+	}
+	// Rejecting brings the file back.
+	if err := s.Reject("ns", "deleted/f.md"); err != nil {
+		t.Fatalf("reject failed: %v", err)
+	}
+	if c, _, _ := s.Read("ns", "f.md"); c != "x" {
+		t.Fatalf("file should be restored after a rejected deletion: %q", c)
+	}
+	if _, _, err := s.Read("ns", "deleted/f.md"); err != ErrNotFound {
+		t.Fatal("deleted/ copy should be gone after reject")
 	}
 }
 
@@ -473,11 +509,13 @@ func TestSchema_EntriesColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"namespace":  true,
-		"filename":   true,
-		"content":    true,
-		"new":        true,
-		"updated_at": true,
+		"namespace":            true,
+		"filename":             true,
+		"content":              true,
+		"new":                  true,
+		"moved_from_namespace": true,
+		"moved_from_filename":  true,
+		"updated_at":           true,
 	}
 	for k := range want {
 		if !cols[k] {
