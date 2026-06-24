@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -22,6 +23,17 @@ var mcpTools = []map[string]any{
 				"section":   map[string]any{"type": "string", "description": "Optional. Accepts a canonical slug (\"phase-10-design\") or the heading text as written (\"Phase 10 design\"). On miss the error lists available slugs in source order."},
 			},
 			"required": []string{"namespace", "filename"},
+		},
+	},
+	{
+		"name":        "boot",
+		"description": "Boot a namespace — returns its index.md and state.md.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string", "description": "Namespace to boot."},
+			},
+			"required": []string{"namespace"},
 		},
 	},
 	{
@@ -282,6 +294,64 @@ func intArg(args map[string]any, key string, def int) int {
 	return def
 }
 
+// namespaceMissError builds the "namespace doesn't exist" recovery payload: the
+// full namespace list (the same set `namespaces` returns) plus close-match
+// suggestions. Shared by read and boot so a bad namespace reports identically.
+func namespaceMissError(namespace string, nsList []string) map[string]any {
+	resp := map[string]any{
+		"error":     fmt.Sprintf("namespace %q does not exist", namespace),
+		"available": nsList,
+	}
+	if hits := closeMatches(namespace, nsList, 5); len(hits) > 0 {
+		resp["suggestions"] = hits
+	}
+	return resp
+}
+
+// readMissError distinguishes the two ways a read can miss — the namespace
+// doesn't exist, or it does but the file isn't in it — and returns a recovery
+// hint shaped like the section-miss error: an `available` list the caller can
+// retry against. The two cases are never ambiguous. The error text names which
+// half of the path was wrong, a namespace miss lists every namespace (the same
+// set `namespaces` returns) plus close-match `suggestions`, and a file miss
+// lists the namespace's files — falling back to the closest matches plus a total
+// `count` when that list is long.
+func readMissError(store Store, namespace, filename string) map[string]any {
+	nsList, err := store.ListNamespaces()
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	if !slices.Contains(nsList, namespace) {
+		return namespaceMissError(namespace, nsList)
+	}
+	// Namespace exists, so the filename is the wrong half.
+	files, err := store.List(namespace)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.Filename
+	}
+	resp := map[string]any{
+		"error": fmt.Sprintf("file %q not found in namespace %q", filename, namespace),
+	}
+	const fileListCap = 20
+	if len(names) <= fileListCap {
+		resp["available"] = names
+	} else {
+		// Too many to dump verbatim: surface the closest matches and the total
+		// so the response stays compact but still points somewhere useful.
+		hits := closeMatches(filename, names, 10)
+		if len(hits) == 0 {
+			hits = names[:fileListCap]
+		}
+		resp["available"] = hits
+		resp["count"] = len(names)
+	}
+	return resp
+}
+
 func runTool(store Store, name string, args map[string]any) (result any, isError bool) {
 	str := func(key string) string {
 		v, _ := args[key].(string)
@@ -299,7 +369,7 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 		}
 		content, updatedAt, err := store.Read(ns, str("filename"))
 		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
+			return readMissError(store, ns, str("filename")), true
 		}
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
@@ -317,6 +387,39 @@ func runTool(store Store, name string, args map[string]any) (result any, isError
 			}, false
 		}
 		return map[string]string{"content": content, "updated_at": updatedAt}, false
+
+	case "boot":
+		ns := nsStr("namespace")
+		if ns == "" {
+			return map[string]string{"error": "missing required argument: namespace"}, true
+		}
+		nsList, err := store.ListNamespaces()
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		if !slices.Contains(nsList, ns) {
+			return namespaceMissError(ns, nsList), true
+		}
+		// Namespace exists: pull both session-context files in one shot. A file
+		// that's absent isn't an error — it's reported in `missing` so a freshly
+		// created namespace can still boot.
+		out := map[string]any{"namespace": ns}
+		var missing []string
+		for _, fn := range []string{"index.md", "state.md"} {
+			content, updatedAt, err := store.Read(ns, fn)
+			if errors.Is(err, ErrNotFound) {
+				missing = append(missing, fn)
+				continue
+			}
+			if err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
+			out[strings.TrimSuffix(fn, ".md")] = map[string]string{"content": content, "updated_at": updatedAt}
+		}
+		if len(missing) > 0 {
+			out["missing"] = missing
+		}
+		return out, false
 
 	case "edit":
 		ns := nsStr("namespace")

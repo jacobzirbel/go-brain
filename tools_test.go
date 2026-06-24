@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -364,5 +367,154 @@ func TestMoveManyTool_EmptyArray(t *testing.T) {
 	res, isErr := runTool(s, "move_many", map[string]any{"moves": []any{}})
 	if isErr {
 		t.Fatalf("empty moves should be a no-op, got: %v", res)
+	}
+}
+
+func TestBootTool_ReturnsIndexAndState(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("proj", "index.md", "INDEX BODY")
+	_ = s.Write("proj", "state.md", "STATE BODY")
+	res, isErr := runTool(s, "boot", map[string]any{"namespace": "proj"})
+	if isErr {
+		t.Fatalf("boot errored: %v", res)
+	}
+	m := res.(map[string]any)
+	if m["namespace"] != "proj" {
+		t.Errorf("expected namespace echoed, got %v", m["namespace"])
+	}
+	idx, ok := m["index"].(map[string]string)
+	if !ok || idx["content"] != "INDEX BODY" {
+		t.Errorf("expected index content, got %v", m["index"])
+	}
+	st, ok := m["state"].(map[string]string)
+	if !ok || st["content"] != "STATE BODY" {
+		t.Errorf("expected state content, got %v", m["state"])
+	}
+	if _, has := m["missing"]; has {
+		t.Errorf("nothing should be missing, got %v", m["missing"])
+	}
+}
+
+func TestBootTool_NamespaceMissReturnsList(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("projects", "index.md", "x")
+	res, isErr := runTool(s, "boot", map[string]any{"namespace": "project"}) // typo
+	if !isErr {
+		t.Fatalf("expected namespace miss to error; got %v", res)
+	}
+	m := res.(map[string]any)
+	if !strings.Contains(m["error"].(string), "does not exist") {
+		t.Errorf("error should say namespace does not exist, got %q", m["error"])
+	}
+	if avail, ok := m["available"].([]string); !ok || !slices.Contains(avail, "projects") {
+		t.Errorf("expected available to include projects, got %v", m["available"])
+	}
+	if sugg, ok := m["suggestions"].([]string); !ok || len(sugg) == 0 || sugg[0] != "projects" {
+		t.Errorf("expected projects suggested, got %v", m["suggestions"])
+	}
+}
+
+func TestBootTool_MissingBootFilesNotAnError(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("proj", "index.md", "INDEX ONLY")
+	_ = s.Write("proj", "notes.md", "irrelevant") // namespace exists; no state.md
+	res, isErr := runTool(s, "boot", map[string]any{"namespace": "proj"})
+	if isErr {
+		t.Fatalf("boot should not error when the namespace exists: %v", res)
+	}
+	m := res.(map[string]any)
+	if _, ok := m["index"]; !ok {
+		t.Error("expected index to be present")
+	}
+	if _, ok := m["state"]; ok {
+		t.Error("state.md is absent — it should not appear")
+	}
+	missing, ok := m["missing"].([]string)
+	if !ok || !slices.Contains(missing, "state.md") {
+		t.Errorf("expected state.md reported in missing, got %v", m["missing"])
+	}
+}
+
+func TestReadTool_NamespaceMissListsAndSuggests(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("projects", "a.md", "x")
+	_ = s.Write("journal", "b.md", "y")
+	res, isErr := runTool(s, "read", map[string]any{
+		"namespace": "project", // typo for "projects"
+		"filename":  "a.md",
+	})
+	if !isErr {
+		t.Fatalf("expected namespace miss to error; got %v", res)
+	}
+	m := res.(map[string]any)
+	errStr := m["error"].(string)
+	if !strings.Contains(errStr, "namespace") || !strings.Contains(errStr, "does not exist") {
+		t.Errorf("error should say the namespace does not exist, got: %q", errStr)
+	}
+	avail, ok := m["available"].([]string)
+	if !ok {
+		t.Fatalf("expected available namespaces list, got %T", m["available"])
+	}
+	if len(avail) != 2 {
+		t.Errorf("expected both namespaces listed, got %v", avail)
+	}
+	sugg, ok := m["suggestions"].([]string)
+	if !ok || len(sugg) == 0 || sugg[0] != "projects" {
+		t.Errorf("expected \"projects\" suggested for \"project\", got %v", m["suggestions"])
+	}
+	// A namespace miss must be distinguishable from a file miss: no file count.
+	if _, has := m["count"]; has {
+		t.Error("namespace miss should not carry a file count")
+	}
+}
+
+func TestReadTool_FileMissListsFiles(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "alpha.md", "x")
+	_ = s.Write("ns", "beta.md", "y")
+	res, isErr := runTool(s, "read", map[string]any{
+		"namespace": "ns",
+		"filename":  "gamma.md",
+	})
+	if !isErr {
+		t.Fatalf("expected file miss to error; got %v", res)
+	}
+	m := res.(map[string]any)
+	errStr := m["error"].(string)
+	if !strings.Contains(errStr, "file") || !strings.Contains(errStr, "not found") || !strings.Contains(errStr, "ns") {
+		t.Errorf("error should name the file and namespace, got: %q", errStr)
+	}
+	avail, ok := m["available"].([]string)
+	if !ok {
+		t.Fatalf("expected available files list, got %T", m["available"])
+	}
+	if len(avail) != 2 {
+		t.Errorf("expected both files listed, got %v", avail)
+	}
+}
+
+func TestReadTool_FileMissLongListTruncatesWithCount(t *testing.T) {
+	s := setupStore(t)
+	for i := 0; i < 30; i++ {
+		_ = s.Write("ns", fmt.Sprintf("doc-%02d.md", i), "x")
+	}
+	res, isErr := runTool(s, "read", map[string]any{
+		"namespace": "ns",
+		"filename":  "doc-05.md.bak", // closest to doc-05.md
+	})
+	if !isErr {
+		t.Fatalf("expected file miss to error; got %v", res)
+	}
+	m := res.(map[string]any)
+	count, ok := m["count"].(int)
+	if !ok || count != 30 {
+		t.Errorf("expected count=30 for a long list, got %v", m["count"])
+	}
+	avail := m["available"].([]string)
+	if len(avail) == 0 || len(avail) > 10 {
+		t.Errorf("expected a capped closest-match list, got %d entries: %v", len(avail), avail)
+	}
+	if !slices.Contains(avail, "doc-05.md") {
+		t.Errorf("expected closest match doc-05.md in %v", avail)
 	}
 }

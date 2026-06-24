@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -236,6 +237,68 @@ func findSectionForWrite(sections []section, query string) (found *section, conf
 		}
 	}
 	return nil, nil, out
+}
+
+// closeMatches returns up to `limit` entries from pool that are textually close
+// to query, best-first. A case-insensitive substring match always qualifies and
+// ranks ahead of pure edit-distance hits; otherwise the edit distance must fall
+// within a third of the longer string's length. Returns nil when nothing is
+// close, so callers can omit the "did you mean" hint entirely. Used by the read
+// not-found path to surface likely-intended namespaces and filenames.
+func closeMatches(query string, pool []string, limit int) []string {
+	q := strings.ToLower(query)
+	type scored struct {
+		name string
+		dist int
+	}
+	var hits []scored
+	for _, cand := range pool {
+		lc := strings.ToLower(cand)
+		switch {
+		case strings.Contains(lc, q) || strings.Contains(q, lc):
+			// Substring overlap is the strongest signal; rank it ahead of
+			// everything scored purely on edit distance.
+			hits = append(hits, scored{cand, -1})
+		default:
+			d := levenshtein(q, lc)
+			if d <= max(len(q), len(lc))/3 {
+				hits = append(hits, scored{cand, d})
+			}
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].dist < hits[j].dist })
+	out := make([]string, 0, limit)
+	for _, h := range hits {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, h.name)
+	}
+	return out
+}
+
+// levenshtein is the standard two-row edit-distance computation. It only ever
+// runs over short namespace/filename lists on the error path, so the allocation
+// is not worth optimizing away.
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, min(cur[j-1]+1, prev[j-1]+cost))
+		}
+		prev = cur
+	}
+	return prev[len(rb)]
 }
 
 // slugifyHeading mirrors goldmark's auto-heading-id algorithm (without dedup).
