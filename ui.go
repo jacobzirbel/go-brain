@@ -79,7 +79,7 @@ func uiAuth(next http.HandlerFunc) http.HandlerFunc {
 
 var uiFuncs = template.FuncMap{
 	"tokens": func(n int) string { return formatThousands(n / 4) },
-	"nodeCtx": func(ns string, n *treeNode) map[string]any {
+	"nodeCtx": func(ns string, n any) map[string]any {
 		return map[string]any{"NS": ns, "Node": n}
 	},
 	"isArchiveFolder": func(name string) bool {
@@ -506,6 +506,33 @@ func handleUIReview(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
 
+// handleUIReviewFolder approves every pending file under a namespace/folder
+// prefix in one shot. An empty prefix approves the whole namespace. Matching
+// mirrors the inbox tree: the prefix is a folder FullPath, so a file belongs to
+// it when its path equals the prefix or sits beneath `prefix/`.
+func handleUIReviewFolder(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	prefix := r.URL.Query().Get("prefix")
+	files, err := store.PendingFiles()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, f := range files {
+		if f.Namespace != ns {
+			continue
+		}
+		if prefix != "" && f.Filename != prefix && !strings.HasPrefix(f.Filename, prefix+"/") {
+			continue
+		}
+		if err := store.Review(ns, f.Filename); err != nil && !errors.Is(err, ErrNoPending) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	http.Redirect(w, r, "/ui/inbox", http.StatusFound)
+}
+
 func handleUIReject(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
@@ -542,6 +569,113 @@ func handleUIComments(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// inboxNode is the inbox counterpart of treeNode: a folder/file tree built from
+// pending files. It carries the full PendingFile on leaves so the inbox view can
+// render the moved-from tag, comment snippet, and Approve button per file.
+type inboxNode struct {
+	Name     string
+	FullPath string // path within the namespace
+	IsFile   bool
+	File     PendingFile
+	Children []*inboxNode
+	Pending  int // count of pending file leaves in this subtree
+}
+
+// inboxGroup wraps one namespace's pending tree, like the home view's
+// namespaceGroup. `global` is pinned to the top; the rest are alphabetical.
+type inboxGroup struct {
+	Namespace string
+	Tree      *inboxNode
+	Pending   int
+}
+
+func findInboxChild(n *inboxNode, name string) *inboxNode {
+	for _, c := range n.Children {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// buildInboxGroups turns the flat pending list into one folder tree per
+// namespace. Folders sort before files, then alphabetically; single-child folder
+// chains are collapsed (VS Code "compact folders") so deep paths stay shallow.
+func buildInboxGroups(files []PendingFile) []inboxGroup {
+	roots := map[string]*inboxNode{}
+	for _, f := range files {
+		root := roots[f.Namespace]
+		if root == nil {
+			root = &inboxNode{}
+			roots[f.Namespace] = root
+		}
+		parts := splitPath(f.Filename)
+		node := root
+		for i, p := range parts {
+			child := findInboxChild(node, p)
+			if child == nil {
+				child = &inboxNode{Name: p, FullPath: strings.Join(parts[:i+1], "/")}
+				node.Children = append(node.Children, child)
+			}
+			node = child
+		}
+		node.IsFile = true
+		node.File = f
+	}
+	groups := make([]inboxGroup, 0, len(roots))
+	for ns, root := range roots {
+		rollupInbox(root)
+		compactInbox(root)
+		groups = append(groups, inboxGroup{Namespace: ns, Tree: root, Pending: root.Pending})
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].Namespace == "global" {
+			return groups[j].Namespace != "global"
+		}
+		if groups[j].Namespace == "global" {
+			return false
+		}
+		return groups[i].Namespace < groups[j].Namespace
+	})
+	return groups
+}
+
+// rollupInbox computes the pending leaf count bottom-up and sorts each level
+// folders-first then alphabetically.
+func rollupInbox(n *inboxNode) {
+	if n.IsFile {
+		n.Pending = 1
+		return
+	}
+	n.Pending = 0
+	for _, c := range n.Children {
+		rollupInbox(c)
+		n.Pending += c.Pending
+	}
+	sort.Slice(n.Children, func(i, j int) bool {
+		a, b := n.Children[i], n.Children[j]
+		if a.IsFile != b.IsFile {
+			return !a.IsFile
+		}
+		return a.Name < b.Name
+	})
+}
+
+// compactInbox merges any folder that has a single folder child into that child,
+// joining their names with "/" (e.g. `a` → `b` → c.md becomes `a/b` → c.md). The
+// namespace root is never merged into, and folders holding a file are left alone.
+func compactInbox(n *inboxNode) {
+	for _, c := range n.Children {
+		for !c.IsFile && len(c.Children) == 1 && !c.Children[0].IsFile {
+			sub := c.Children[0]
+			c.Name = c.Name + "/" + sub.Name
+			c.FullPath = sub.FullPath
+			c.Children = sub.Children
+		}
+		compactInbox(c)
+	}
+}
+
 func handleUIInbox(w http.ResponseWriter, r *http.Request) {
 	files, err := store.PendingFiles()
 	if err != nil {
@@ -549,7 +683,8 @@ func handleUIInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderUI(w, "inbox", map[string]any{
-		"Files":  files,
+		"Groups": buildInboxGroups(files),
+		"Total":  len(files),
 		"Chrome": chrome(),
 	})
 }
@@ -607,6 +742,7 @@ func registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/new", uiAuth(handleUINewGet))
 	mux.HandleFunc("POST /ui/new", uiAuth(handleUINewPost))
 	mux.HandleFunc("POST /ui/review", uiAuth(handleUIReview))
+	mux.HandleFunc("POST /ui/review-folder", uiAuth(handleUIReviewFolder))
 	mux.HandleFunc("POST /ui/reject", uiAuth(handleUIReject))
 	mux.HandleFunc("GET /ui/comments", uiAuth(handleUIComments))
 	mux.HandleFunc("GET /ui/inbox", uiAuth(handleUIInbox))
@@ -717,6 +853,15 @@ const uiCSS = `
   ul.tree details > summary::before { content: "▸"; display: inline-block; width: 1em; color: var(--details-arrow); transition: transform 0.1s; }
   ul.tree details[open] > summary::before { transform: rotate(90deg); }
   ul.tree .folder { font-weight: 600; }
+  ul.tree details > summary { display: flex; align-items: center; gap: 8px; }
+  ul.tree details > summary .approve-form { margin-left: auto; }
+  .inbox-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .inbox-row a { word-break: break-word; }
+  .inbox-row .approve-form { margin-left: auto; }
+  .approve-form { display: inline; }
+  .approve { background: transparent; color: var(--btn-success); border: 1px solid var(--border-strong); padding: 3px 11px; font-size: 12px; font-weight: 600; min-height: 0; border-radius: 999px; line-height: 1.5; cursor: pointer; white-space: nowrap; transition: background 0.12s, color 0.12s, border-color 0.12s; }
+  @media (hover: hover) { .approve:hover { background: var(--btn-success); border-color: var(--btn-success); color: #fff; } }
+  .approve:active { opacity: 0.65; }
   .pending-dot { color: var(--pending); font-size: 14px; line-height: 1; }
   .pending-tag { color: var(--pending); font-size: 12px; font-weight: 600; }
   .review-banner { position: sticky; top: 0; z-index: 5; background: var(--banner-bg); border: 1px solid var(--banner-border); color: var(--banner-text); padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -1112,29 +1257,55 @@ const uiTemplateSrc = `
 {{end}}
 
 {{define "inbox"}}` + chromeStart + `
-<h2>Inbox</h2>
-{{if not .Files}}<p class="meta">No pending changes.</p>{{end}}
-{{if .Files}}
-<ul class="tree">
-{{range .Files}}
-  <li>
-    <a href="/ui/file?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">
-      <strong>{{.Namespace}}</strong> / {{.Filename}}
-    </a>
-    {{if .MovedFromFilename}}<span class="pending-tag">← moved from {{.MovedFromNamespace}} / {{.MovedFromFilename}}</span>{{end}}
-    <span class="pending-dot">●</span>
-    <form method="POST" action="/ui/review?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}&return=inbox" style="display:inline">
-      <button type="submit" class="btn-success">Approve</button>
+<h2>Inbox{{if .Total}} <span class="meta" style="font-size:15px">({{.Total}})</span>{{end}}</h2>
+{{if not .Groups}}<p class="meta">No pending changes.</p>{{end}}
+{{range .Groups}}
+<div class="ns" data-ns="{{.Namespace}}">
+  <h3>
+    {{.Namespace}}
+    <span class="pending-tag">{{.Pending}} pending</span>
+    <form class="approve-form" style="margin-left:auto" method="POST" action="/ui/review-folder?ns={{.Namespace | urlquery}}"
+          onsubmit="return confirm('Approve all {{.Pending}} pending in {{.Namespace}}?')">
+      <button type="submit" class="approve">✓ Approve all</button>
     </form>
-    <div class="meta">
-      {{if .CommentCount}}{{.CommentCount}} comment{{if ne .CommentCount 1}}s{{end}} · {{snippet .LastCommentSnippet}}{{else}}no comment{{end}}
-      · {{.SortAt}}
-    </div>
-  </li>
-{{end}}
-</ul>
+  </h3>
+  {{template "inboxChildren" (nodeCtx .Namespace .Tree)}}
+</div>
 {{end}}
 ` + chromeEnd + `{{end}}
+
+{{define "inboxChildren"}}{{$ns := .NS}}<ul class="tree">
+  {{range .Node.Children}}
+  <li>
+    {{if .IsFile}}
+    <div class="inbox-row">
+      <a href="/ui/file?ns={{$ns | urlquery}}&name={{.FullPath | urlquery}}">{{.Name}}</a>
+      <span class="pending-dot">●</span>
+      {{if .File.MovedFromFilename}}<span class="pending-tag">← moved from {{.File.MovedFromNamespace}} / {{.File.MovedFromFilename}}</span>{{end}}
+      <form class="approve-form" method="POST" action="/ui/review?ns={{$ns | urlquery}}&name={{.FullPath | urlquery}}&return=inbox">
+        <button type="submit" class="approve" title="Approve">✓</button>
+      </form>
+    </div>
+    <div class="meta">
+      {{if .File.CommentCount}}{{.File.CommentCount}} comment{{if ne .File.CommentCount 1}}s{{end}} · {{snippet .File.LastCommentSnippet}}{{else}}no comment{{end}}
+      · {{.File.SortAt}}
+    </div>
+    {{else}}
+    <details open>
+      <summary>
+        <span class="folder">{{.Name}}/</span>
+        <span class="meta"><span class="pending-tag">{{.Pending}}</span></span>
+        <form class="approve-form" method="POST" action="/ui/review-folder?ns={{$ns | urlquery}}&prefix={{.FullPath | urlquery}}"
+              onsubmit="return confirm('Approve all {{.Pending}} pending in {{.Name}}/?')">
+          <button type="submit" class="approve" onclick="event.stopPropagation()">✓ Approve all</button>
+        </form>
+      </summary>
+      {{template "inboxChildren" (nodeCtx $ns .)}}
+    </details>
+    {{end}}
+  </li>
+  {{end}}
+</ul>{{end}}
 
 {{define "edit"}}` + chromeStart + `
 <p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong> (editing)</p>
