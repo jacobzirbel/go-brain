@@ -9,10 +9,10 @@ func TestEditTool_HappyPath(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "alpha beta gamma")
 	res, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "f.md",
-		"old_str": "beta",
-		"new_str": "DELTA",
+		"namespace": "ns",
+		"filename":  "f.md",
+		"old_str":   "beta",
+		"new_str":   "DELTA",
 	})
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
@@ -27,17 +27,17 @@ func TestEditTool_NotUnique(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "foo foo foo")
 	res, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "f.md",
-		"old_str": "foo",
-		"new_str": "bar",
+		"namespace": "ns",
+		"filename":  "f.md",
+		"old_str":   "foo",
+		"new_str":   "bar",
 	})
 	if !isErr {
 		t.Fatalf("expected uniqueness error, got %v", res)
 	}
-	m := res.(map[string]any)
-	if !strings.Contains(m["error"].(string), "must be unique") {
-		t.Errorf("error message: %v", m["error"])
+	m := res.(errResult)
+	if !strings.Contains(m.Error, "must be unique") {
+		t.Errorf("error message: %v", m.Error)
 	}
 	if got, _, _ := s.Read("ns", "f.md"); got != "foo foo foo" {
 		t.Errorf("file was modified despite non-unique match: %q", got)
@@ -73,10 +73,10 @@ func TestEditTool_CRLFOldStringMatchesLFContent(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "line1\nline2\nline3")
 	res, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "f.md",
-		"old_str": "line1\r\nline2",
-		"new_str": "X\r\nY",
+		"namespace": "ns",
+		"filename":  "f.md",
+		"old_str":   "line1\r\nline2",
+		"new_str":   "X\r\nY",
 	})
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
@@ -91,10 +91,10 @@ func TestEditTool_NotFound(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "alpha gamma")
 	res, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "f.md",
-		"old_str": "beta",
-		"new_str": "DELTA",
+		"namespace": "ns",
+		"filename":  "f.md",
+		"old_str":   "beta",
+		"new_str":   "DELTA",
 	})
 	if !isErr {
 		t.Fatalf("expected not-found error, got %v", res)
@@ -105,10 +105,10 @@ func TestEditTool_EmptyOldString(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "anything")
 	_, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "f.md",
-		"old_str": "",
-		"new_str": "x",
+		"namespace": "ns",
+		"filename":  "f.md",
+		"old_str":   "",
+		"new_str":   "x",
 	})
 	if !isErr {
 		t.Fatal("expected error for empty old_str")
@@ -118,10 +118,10 @@ func TestEditTool_EmptyOldString(t *testing.T) {
 func TestEditTool_FileNotFound(t *testing.T) {
 	s := setupStore(t)
 	_, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "missing.md",
-		"old_str": "x",
-		"new_str": "y",
+		"namespace": "ns",
+		"filename":  "missing.md",
+		"old_str":   "x",
+		"new_str":   "y",
 	})
 	if !isErr {
 		t.Fatal("expected error for missing file")
@@ -184,9 +184,9 @@ func TestReadTool_MissingNamespace_Errors(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected error when namespace is absent")
 	}
-	m := res.(map[string]string)
-	if !strings.Contains(m["error"], "namespace") {
-		t.Errorf("error should mention namespace, got: %q", m["error"])
+	m := res.(errResult)
+	if !strings.Contains(m.Error, "namespace") {
+		t.Errorf("error should mention namespace, got: %q", m.Error)
 	}
 }
 
@@ -200,9 +200,9 @@ func TestWriteTool_MissingNamespace_Errors(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected error when namespace is absent")
 	}
-	m := res.(map[string]string)
-	if !strings.Contains(m["error"], "namespace") {
-		t.Errorf("error should mention namespace, got: %q", m["error"])
+	m := res.(errResult)
+	if !strings.Contains(m.Error, "namespace") {
+		t.Errorf("error should mention namespace, got: %q", m.Error)
 	}
 	got, _, _ := s.Read("ns", "f.md")
 	if got != "important data" {
@@ -236,9 +236,9 @@ func TestCreateTool_ExistingFile_Errors(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected error when creating a file that already exists")
 	}
-	m := res.(map[string]string)
-	if !strings.Contains(m["error"], "exists") {
-		t.Errorf("error should mention the file exists, got: %q", m["error"])
+	m := res.(errResult)
+	if !strings.Contains(m.Error, "exists") {
+		t.Errorf("error should mention the file exists, got: %q", m.Error)
 	}
 	if got, _, _ := s.Read("ns", "f.md"); got != "important data" {
 		t.Errorf("file was modified despite create-on-existing: %q", got)
@@ -271,8 +271,8 @@ func TestForceWriteTool_MissingFile_Errors(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected error when force_writing a file that does not exist")
 	}
-	m := res.(map[string]string)
-	if !strings.Contains(m["error"], "not found") {
-		t.Errorf("error should mention not found, got: %q", m["error"])
+	m := res.(errResult)
+	if !strings.Contains(m.Error, "not found") {
+		t.Errorf("error should mention not found, got: %q", m.Error)
 	}
 }

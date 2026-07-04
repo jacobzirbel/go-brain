@@ -33,14 +33,14 @@ func renderMarkdown(src string) (template.HTML, error) {
 
 const sessionCookieName = "gobrain_session"
 
-func setSessionCookie(w http.ResponseWriter, token string) {
+func (s *server) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   strings.HasPrefix(baseURL, "https://"),
+		Secure:   strings.HasPrefix(s.cfg.baseURL, "https://"),
 		MaxAge:   60 * 60 * 24 * 30,
 	})
 }
@@ -55,21 +55,21 @@ func clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-func currentSession(r *http.Request) (string, bool) {
+func (s *server) currentSession(r *http.Request) (string, bool) {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
 		return "", false
 	}
-	ok, err := store.HasSession(c.Value)
+	ok, err := s.store.HasSession(c.Value)
 	if err != nil || !ok {
 		return "", false
 	}
 	return c.Value, true
 }
 
-func uiAuth(next http.HandlerFunc) http.HandlerFunc {
+func (s *server) uiAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := currentSession(r); !ok {
+		if _, ok := s.currentSession(r); !ok {
 			http.Redirect(w, r, "/ui/login", http.StatusFound)
 			return
 		}
@@ -137,48 +137,54 @@ type chromeData struct {
 	InboxCount int
 }
 
-func chrome() chromeData {
-	n, _ := store.GlobalPendingCount()
+func (s *server) chrome() chromeData {
+	n, _ := s.store.GlobalPendingCount()
 	return chromeData{InboxCount: n}
 }
 
-func handleUILoginGet(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUILoginGet(w http.ResponseWriter, r *http.Request) {
 	renderUI(w, "login", map[string]any{"Error": r.URL.Query().Get("error")})
 }
 
-func handleUILoginPost(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+func (s *server) handleUILoginPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
 	pw := r.FormValue("password")
-	if frontendPassword == "" || pw != frontendPassword {
+	if s.cfg.frontendPassword == "" || pw != s.cfg.frontendPassword {
 		http.Redirect(w, r, "/ui/login?error=1", http.StatusFound)
 		return
 	}
 	tok := randHex(32)
-	if err := store.CreateSession(tok); err != nil {
+	if err := s.store.CreateSession(tok); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	setSessionCookie(w, tok)
+	s.setSessionCookie(w, tok)
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
-func handleUILogout(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUILogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil {
-		_ = store.DeleteSession(c.Value)
+		if err := s.store.DeleteSession(c.Value); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	clearSessionCookie(w)
 	http.Redirect(w, r, "/ui/login", http.StatusFound)
 }
 
 type treeNode struct {
-	Name         string
-	FullPath     string
-	IsFile       bool
-	File         FileEntry
-	Children     []*treeNode
-	Size         int // bytes, excluding archive subtrees
-	Pending      int // count of pending files in subtree (or 1 if leaf has pending)
-	HasPending   bool
+	Name       string
+	FullPath   string
+	IsFile     bool
+	File       FileEntry
+	Children   []*treeNode
+	Size       int // bytes, excluding archive subtrees
+	Pending    int // count of pending files in subtree (or 1 if leaf has pending)
+	HasPending bool
 }
 
 func buildTree(files []FileEntry) *treeNode {
@@ -274,8 +280,8 @@ type namespaceGroup struct {
 	PendingCount int
 }
 
-func handleUIHome(w http.ResponseWriter, r *http.Request) {
-	namespaces, err := store.ListNamespaces()
+func (s *server) handleUIHome(w http.ResponseWriter, r *http.Request) {
+	namespaces, err := s.store.ListNamespaces()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -283,7 +289,7 @@ func handleUIHome(w http.ResponseWriter, r *http.Request) {
 	groups := make([]namespaceGroup, 0, len(namespaces))
 	grandTotal := 0
 	for _, ns := range namespaces {
-		files, err := store.List(ns)
+		files, err := s.store.List(ns)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -300,25 +306,19 @@ func handleUIHome(w http.ResponseWriter, r *http.Request) {
 	// Pin `global` to the top regardless of alphabetical order; everything
 	// else stays in the order ListNamespaces returned (alphabetical).
 	sort.SliceStable(groups, func(i, j int) bool {
-		if groups[i].Namespace == "global" {
-			return groups[j].Namespace != "global"
-		}
-		if groups[j].Namespace == "global" {
-			return false
-		}
-		return false
+		return groups[i].Namespace == "global" && groups[j].Namespace != "global"
 	})
 	renderUI(w, "home", map[string]any{
 		"Groups":     groups,
 		"GrandTotal": grandTotal,
-		"Chrome":     chrome(),
+		"Chrome":     s.chrome(),
 	})
 }
 
-func handleUIFile(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIFile(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
-	content, newVal, updatedAt, err := store.ReadEntry(ns, name)
+	content, newVal, updatedAt, err := s.store.ReadEntry(ns, name)
 	if errors.Is(err, ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -332,7 +332,7 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 	if hasPending {
 		displayed = newVal.String
 	}
-	fromNS, fromName, hasMovedFrom, err := store.MovedFrom(ns, name)
+	fromNS, fromName, hasMovedFrom, err := s.store.MovedFrom(ns, name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -350,7 +350,7 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 		"MovedFromNamespace": fromNS,
 		"MovedFromFilename":  fromName,
 		"IsArchived":         isArchivePath(name),
-		"Chrome":             chrome(),
+		"Chrome":             s.chrome(),
 	}
 	if hasPending {
 		data["New"] = newVal.String
@@ -358,7 +358,7 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 	// Default thread: unreviewed only, 20 most recent.
 	// `?history=1` flips the toggle on so reviewed comments render too.
 	includeHistory := r.URL.Query().Get("history") == "1"
-	comments, err := store.ListComments(ns, name, includeHistory, 20, 0)
+	comments, err := s.store.ListComments(ns, name, includeHistory, 20, 0)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -378,10 +378,10 @@ func handleUIFile(w http.ResponseWriter, r *http.Request) {
 	renderUI(w, "file", data)
 }
 
-func handleUIEditGet(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIEditGet(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
-	content, _, err := store.Read(ns, name)
+	content, _, err := s.store.Read(ns, name)
 	if errors.Is(err, ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -394,24 +394,27 @@ func handleUIEditGet(w http.ResponseWriter, r *http.Request) {
 		"Namespace": ns,
 		"Filename":  name,
 		"Content":   content,
-		"Chrome":    chrome(),
+		"Chrome":    s.chrome(),
 	})
 }
 
-func handleUIEditPost(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIEditPost(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
 	content := r.FormValue("content")
 	comment := strings.TrimSpace(r.FormValue("comment"))
 	alreadyReviewed := r.FormValue("already_reviewed") == "1"
 
-	if err := store.Write(ns, name, content); err != nil {
+	if err := s.store.Write(ns, name, content); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if comment != "" {
-		if err := store.InsertComment(ns, name, comment); err != nil {
+		if err := s.store.InsertComment(ns, name, comment); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -419,7 +422,7 @@ func handleUIEditPost(w http.ResponseWriter, r *http.Request) {
 	if alreadyReviewed {
 		// The move (if any) already took effect; approving just blesses the
 		// current state, so the file stays where it is.
-		if err := store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+		if err := s.store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -427,47 +430,50 @@ func handleUIEditPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
 
-func handleUIArchive(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIArchive(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
 	dst := "archived/" + name
-	if err := store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
+	if err := s.store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
-func handleUIDelete(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIDelete(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
 	dst := "deleted/" + name
-	if err := store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
+	if err := s.store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
-func handleUIHardDelete(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIHardDelete(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
-	if err := store.Delete(ns, name); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := s.store.Delete(ns, name); err != nil && !errors.Is(err, ErrNotFound) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
-func handleUINewGet(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUINewGet(w http.ResponseWriter, r *http.Request) {
 	renderUI(w, "new", map[string]any{
 		"Namespace": r.URL.Query().Get("ns"),
-		"Chrome":    chrome(),
+		"Chrome":    s.chrome(),
 	})
 }
 
-func handleUINewPost(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+func (s *server) handleUINewPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
 	ns := strings.TrimSpace(r.FormValue("namespace"))
 	name := strings.TrimSpace(r.FormValue("filename"))
 	content := r.FormValue("content")
@@ -477,25 +483,31 @@ func handleUINewPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "namespace and filename are required", http.StatusBadRequest)
 		return
 	}
-	if err := store.Write(ns, name, content); err != nil {
+	if err := s.store.Write(ns, name, content); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if comment != "" {
-		_ = store.InsertComment(ns, name, comment)
+		if err := s.store.InsertComment(ns, name, comment); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if alreadyReviewed {
-		_ = store.Review(ns, name)
+		if err := s.store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
 
-func handleUIReview(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIReview(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
 	// The move (if any) already took effect; approving just blesses the current
 	// state, so the file stays where it is.
-	if err := store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+	if err := s.store.Review(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -510,10 +522,10 @@ func handleUIReview(w http.ResponseWriter, r *http.Request) {
 // prefix in one shot. An empty prefix approves the whole namespace. Matching
 // mirrors the inbox tree: the prefix is a folder FullPath, so a file belongs to
 // it when its path equals the prefix or sits beneath `prefix/`.
-func handleUIReviewFolder(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIReviewFolder(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	prefix := r.URL.Query().Get("prefix")
-	files, err := store.PendingFiles()
+	files, err := s.store.PendingFiles()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -525,7 +537,7 @@ func handleUIReviewFolder(w http.ResponseWriter, r *http.Request) {
 		if prefix != "" && f.Filename != prefix && !strings.HasPrefix(f.Filename, prefix+"/") {
 			continue
 		}
-		if err := store.Review(ns, f.Filename); err != nil && !errors.Is(err, ErrNoPending) {
+		if err := s.store.Review(ns, f.Filename); err != nil && !errors.Is(err, ErrNoPending) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -533,13 +545,13 @@ func handleUIReviewFolder(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/inbox", http.StatusFound)
 }
 
-func handleUIReject(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIReject(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("name")
 	// Rejecting an unreviewed move sends the file back to its origin — capture
 	// it first so the redirect follows the file there.
-	fromNS, fromName, hasMove, _ := store.MovedFrom(ns, name)
-	if err := store.Reject(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
+	fromNS, fromName, hasMove, _ := s.store.MovedFrom(ns, name)
+	if err := s.store.Reject(ns, name); err != nil && !errors.Is(err, ErrNoPending) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -549,22 +561,22 @@ func handleUIReject(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/file?"+url.Values{"ns": {ns}, "name": {name}}.Encode(), http.StatusFound)
 }
 
-func handleUIComments(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIComments(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("ns")
 	name := r.URL.Query().Get("file")
 	includeReviewed := r.URL.Query().Get("include_reviewed") == "1"
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	comments, err := store.ListComments(ns, name, includeReviewed, 20, offset)
+	comments, err := s.store.ListComments(ns, name, includeReviewed, 20, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	renderUI(w, "comments_fragment", map[string]any{
-		"Comments":  comments,
-		"NextOffset": offset + len(comments),
-		"HaveMore":  len(comments) == 20,
-		"Namespace": ns,
-		"Filename":  name,
+		"Comments":        comments,
+		"NextOffset":      offset + len(comments),
+		"HaveMore":        len(comments) == 20,
+		"Namespace":       ns,
+		"Filename":        name,
 		"IncludeReviewed": includeReviewed,
 	})
 }
@@ -676,8 +688,8 @@ func compactInbox(n *inboxNode) {
 	}
 }
 
-func handleUIInbox(w http.ResponseWriter, r *http.Request) {
-	files, err := store.PendingFiles()
+func (s *server) handleUIInbox(w http.ResponseWriter, r *http.Request) {
+	files, err := s.store.PendingFiles()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -685,13 +697,13 @@ func handleUIInbox(w http.ResponseWriter, r *http.Request) {
 	renderUI(w, "inbox", map[string]any{
 		"Groups": buildInboxGroups(files),
 		"Total":  len(files),
-		"Chrome": chrome(),
+		"Chrome": s.chrome(),
 	})
 }
 
 // handleUIExport streams a zip of all non-archive entries in a namespace.
 // Slashes in filenames are replaced with '-' so the zip is flat. Content is COALESCE(new, old).
-func handleUIExport(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUIExport(w http.ResponseWriter, r *http.Request) {
 	// path: /ui/export/{ns}.zip
 	rest := strings.TrimPrefix(r.URL.Path, "/ui/export/")
 	ns := strings.TrimSuffix(rest, ".zip")
@@ -699,7 +711,7 @@ func handleUIExport(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	files, err := store.List(ns)
+	files, err := s.store.List(ns)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -714,7 +726,7 @@ func handleUIExport(w http.ResponseWriter, r *http.Request) {
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	for _, f := range files {
-		content, _, err := store.Read(ns, f.Filename)
+		content, _, err := s.store.Read(ns, f.Filename)
 		if err != nil {
 			continue
 		}
@@ -728,25 +740,25 @@ func handleUIExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func registerUIRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /ui/login", handleUILoginGet)
-	mux.HandleFunc("POST /ui/login", handleUILoginPost)
-	mux.HandleFunc("GET /ui/logout", handleUILogout)
-	mux.HandleFunc("GET /ui/", uiAuth(handleUIHome))
-	mux.HandleFunc("GET /ui/file", uiAuth(handleUIFile))
-	mux.HandleFunc("GET /ui/edit", uiAuth(handleUIEditGet))
-	mux.HandleFunc("POST /ui/edit", uiAuth(handleUIEditPost))
-	mux.HandleFunc("POST /ui/archive", uiAuth(handleUIArchive))
-	mux.HandleFunc("POST /ui/delete", uiAuth(handleUIDelete))
-	mux.HandleFunc("POST /ui/hard-delete", uiAuth(handleUIHardDelete))
-	mux.HandleFunc("GET /ui/new", uiAuth(handleUINewGet))
-	mux.HandleFunc("POST /ui/new", uiAuth(handleUINewPost))
-	mux.HandleFunc("POST /ui/review", uiAuth(handleUIReview))
-	mux.HandleFunc("POST /ui/review-folder", uiAuth(handleUIReviewFolder))
-	mux.HandleFunc("POST /ui/reject", uiAuth(handleUIReject))
-	mux.HandleFunc("GET /ui/comments", uiAuth(handleUIComments))
-	mux.HandleFunc("GET /ui/inbox", uiAuth(handleUIInbox))
-	mux.HandleFunc("GET /ui/export/", uiAuth(handleUIExport))
+func (s *server) registerUIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /ui/login", s.handleUILoginGet)
+	mux.HandleFunc("POST /ui/login", s.handleUILoginPost)
+	mux.HandleFunc("GET /ui/logout", s.handleUILogout)
+	mux.HandleFunc("GET /ui/", s.uiAuth(s.handleUIHome))
+	mux.HandleFunc("GET /ui/file", s.uiAuth(s.handleUIFile))
+	mux.HandleFunc("GET /ui/edit", s.uiAuth(s.handleUIEditGet))
+	mux.HandleFunc("POST /ui/edit", s.uiAuth(s.handleUIEditPost))
+	mux.HandleFunc("POST /ui/archive", s.uiAuth(s.handleUIArchive))
+	mux.HandleFunc("POST /ui/delete", s.uiAuth(s.handleUIDelete))
+	mux.HandleFunc("POST /ui/hard-delete", s.uiAuth(s.handleUIHardDelete))
+	mux.HandleFunc("GET /ui/new", s.uiAuth(s.handleUINewGet))
+	mux.HandleFunc("POST /ui/new", s.uiAuth(s.handleUINewPost))
+	mux.HandleFunc("POST /ui/review", s.uiAuth(s.handleUIReview))
+	mux.HandleFunc("POST /ui/review-folder", s.uiAuth(s.handleUIReviewFolder))
+	mux.HandleFunc("POST /ui/reject", s.uiAuth(s.handleUIReject))
+	mux.HandleFunc("GET /ui/comments", s.uiAuth(s.handleUIComments))
+	mux.HandleFunc("GET /ui/inbox", s.uiAuth(s.handleUIInbox))
+	mux.HandleFunc("GET /ui/export/", s.uiAuth(s.handleUIExport))
 }
 
 const uiCSS = `

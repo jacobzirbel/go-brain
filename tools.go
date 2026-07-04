@@ -11,277 +11,332 @@ const filenameDescription = "Name of the file. Slashes create folders for displa
 
 const commentDescription = "Optional. Short explanation of why this change was made. Use when the change isn't self-evident from the diff."
 
-var mcpTools = []map[string]any{
+// ── Tool schema ───────────────────────────────────────────────────────────────
+
+type toolDef struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	InputSchema inputSchema `json:"inputSchema"`
+}
+
+type inputSchema struct {
+	Type       string              `json:"type"`
+	Properties map[string]property `json:"properties"`
+	Required   []string            `json:"required,omitempty"`
+}
+
+type property struct {
+	Type        string       `json:"type"`
+	Description string       `json:"description,omitempty"`
+	Items       *inputSchema `json:"items,omitempty"`
+}
+
+var mcpTools = []toolDef{
 	{
-		"name":        "read",
-		"description": "cat <filename> — get the contents of a file in a namespace. Pass `section` to return just that section's bytes verbatim.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string", "description": "Namespace for the file"},
-				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"section":   map[string]any{"type": "string", "description": "Optional. Accepts a canonical slug (\"phase-10-design\") or the heading text as written (\"Phase 10 design\"). On miss the error lists available slugs in source order."},
+		Name:        "read",
+		Description: "cat <filename> — get the contents of a file in a namespace. Pass `section` to return just that section's bytes verbatim.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string", Description: "Namespace for the file"},
+				"filename":  {Type: "string", Description: filenameDescription},
+				"section":   {Type: "string", Description: "Optional. Accepts a canonical slug (\"phase-10-design\") or the heading text as written (\"Phase 10 design\"). On miss the error lists available slugs in source order."},
 			},
-			"required": []string{"namespace", "filename"},
+			Required: []string{"namespace", "filename"},
 		},
 	},
 	{
-		"name":        "boot",
-		"description": "Boot a namespace — returns its index.md and state.md.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string", "description": "Namespace to boot."},
+		Name:        "boot",
+		Description: "Boot a namespace — returns its index.md and state.md.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string", Description: "Namespace to boot."},
 			},
-			"required": []string{"namespace"},
+			Required: []string{"namespace"},
 		},
 	},
 	{
-		"name":        "create",
-		"description": "Create a new file in a namespace. Fails if the file already exists — use force_write to replace an existing file, or edit for surgical changes.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"content":   map[string]any{"type": "string"},
-				"comment":   map[string]any{"type": "string", "description": commentDescription},
+		Name:        "create",
+		Description: "Create a new file in a namespace. Fails if the file already exists — use force_write to replace an existing file, or edit for surgical changes.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string", Description: filenameDescription},
+				"content":   {Type: "string"},
+				"comment":   {Type: "string", Description: commentDescription},
 			},
-			"required": []string{"namespace", "filename", "content"},
+			Required: []string{"namespace", "filename", "content"},
 		},
 	},
 	{
-		"name":        "force_write",
-		"description": "Overwrite an existing file in a namespace, replacing its entire contents. Fails if the file does not exist — use create for new files. Prefer edit for surgical changes; reach for force_write only when replacing the whole file.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"content":   map[string]any{"type": "string"},
-				"comment":   map[string]any{"type": "string", "description": commentDescription},
+		Name:        "force_write",
+		Description: "Overwrite an existing file in a namespace, replacing its entire contents. Fails if the file does not exist — use create for new files. Prefer edit for surgical changes; reach for force_write only when replacing the whole file.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string", Description: filenameDescription},
+				"content":   {Type: "string"},
+				"comment":   {Type: "string", Description: commentDescription},
 			},
-			"required": []string{"namespace", "filename", "content"},
+			Required: []string{"namespace", "filename", "content"},
 		},
 	},
 	{
-		"name":        "append",
-		"description": "Append text to a file in a namespace (creates if not exists; inserts a newline first if the file is non-empty).",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"content":   map[string]any{"type": "string"},
-				"comment":   map[string]any{"type": "string", "description": commentDescription},
+		Name:        "append",
+		Description: "Append text to a file in a namespace (creates if not exists; inserts a newline first if the file is non-empty).",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string", Description: filenameDescription},
+				"content":   {Type: "string"},
+				"comment":   {Type: "string", Description: commentDescription},
 			},
-			"required": []string{"namespace", "filename", "content"},
+			Required: []string{"namespace", "filename", "content"},
 		},
 	},
 	{
-		"name":        "edit",
-		"description": "Replace `old_str` with `new_str` in the named file. Fails if `old_str` is missing or matches more than once. Pair with `read(section=...)` for section-scoped edits — the returned bytes are verbatim and round-trip safely.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"old_str":   map[string]any{"type": "string", "description": "Exact bytes to find. Must occur exactly once."},
-				"new_str":   map[string]any{"type": "string", "description": "Replacement bytes."},
-				"comment":   map[string]any{"type": "string", "description": commentDescription},
+		Name:        "edit",
+		Description: "Replace `old_str` with `new_str` in the named file. Fails if `old_str` is missing or matches more than once. Pair with `read(section=...)` for section-scoped edits — the returned bytes are verbatim and round-trip safely.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string", Description: filenameDescription},
+				"old_str":   {Type: "string", Description: "Exact bytes to find. Must occur exactly once."},
+				"new_str":   {Type: "string", Description: "Replacement bytes."},
+				"comment":   {Type: "string", Description: commentDescription},
 			},
-			"required": []string{"namespace", "filename", "old_str", "new_str"},
+			Required: []string{"namespace", "filename", "old_str", "new_str"},
 		},
 	},
 	{
-		"name":        "namespaces",
-		"description": "List all namespaces that contain at least one file.",
-		"inputSchema": map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
+		Name:        "namespaces",
+		Description: "List all namespaces that contain at least one file.",
+		InputSchema: inputSchema{
+			Type:       "object",
+			Properties: map[string]property{},
 		},
 	},
 	{
-		"name":        "tree",
-		"description": "Folder structure of a namespace, with markdown headings surfaced as nested section nodes under each .md file. Section labels show the original heading text; pass that text — or the slug — to `read(section=...)`.\n\nDEFAULTS:\n- Root files expand to ## sections (depth=1).\n- Sub-folders collapse to \"name/ (N items)\" — pass `path=\"name/\"` to expand one.\n- archived/ is hidden unless include_archive=true or a path targets it; deleted/ is always hidden unless a path explicitly targets it.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\"). Globs bypass folder collapse so matches render in full.\n- `depth`: 0=files only; 1=## (default); 2=## and ###; N=up to level N+1; 99=all headings and full folder recursion.\n- `include_archive`: include archived/ (not deleted/).\n- `meta`: annotate each file with last-modified date and pending flag.\n\nSections ≥400 approx tokens are annotated with their token count.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace":       map[string]any{"type": "string"},
-				"path":            map[string]any{"type": "string", "description": "Optional literal filename, folder prefix (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\")."},
-				"depth":           map[string]any{"type": "integer", "description": "Section heading depth. 0/1/2/.../99 — see tool description."},
-				"include_archive": map[string]any{"type": "boolean", "description": "Include the archived/ prefix. Defaults to false. Does not include deleted/."},
-				"meta":            map[string]any{"type": "boolean", "description": "Annotate each file with updated_at date and pending status. Defaults to false."},
+		Name:        "tree",
+		Description: "Folder structure of a namespace, with markdown headings surfaced as nested section nodes under each .md file. Section labels show the original heading text; pass that text — or the slug — to `read(section=...)`.\n\nDEFAULTS:\n- Root files expand to ## sections (depth=1).\n- Sub-folders collapse to \"name/ (N items)\" — pass `path=\"name/\"` to expand one.\n- archived/ is hidden unless include_archive=true or a path targets it; deleted/ is always hidden unless a path explicitly targets it.\n\nPARAMS:\n- `path`: literal file (\"decisions.md\"), folder (\"tasks/\"), or doublestar glob (\"**/decisions.md\"). Globs bypass folder collapse so matches render in full.\n- `depth`: 0=files only; 1=## (default); 2=## and ###; N=up to level N+1; 99=all headings and full folder recursion.\n- `include_archive`: include archived/ (not deleted/).\n- `meta`: annotate each file with last-modified date and pending flag.\n\nSections ≥400 approx tokens are annotated with their token count.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace":       {Type: "string"},
+				"path":            {Type: "string", Description: "Optional literal filename, folder prefix (\"tasks/\"), or doublestar glob (\"**/decisions.md\", \"decisions/*.md\")."},
+				"depth":           {Type: "integer", Description: "Section heading depth. 0/1/2/.../99 — see tool description."},
+				"include_archive": {Type: "boolean", Description: "Include the archived/ prefix. Defaults to false. Does not include deleted/."},
+				"meta":            {Type: "boolean", Description: "Annotate each file with updated_at date and pending status. Defaults to false."},
 			},
-			"required": []string{"namespace"},
+			Required: []string{"namespace"},
 		},
 	},
-	// {
-	// 	"name":        "copy",
-	// 	"description": "Copy a file. If new_filename ends with '/', the source basename is appended (src=\"a/b.md\", new_filename=\"archived/\" → \"archived/b.md\"). Fails if the destination exists.",
-	// 	"inputSchema": map[string]any{
-	// 		"type": "object",
-	// 		"properties": map[string]any{
-	// 			"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
-	// 			"filename":      map[string]any{"type": "string", "description": "Source filename"},
-	// 			"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source)"},
-	// 			"new_filename":  map[string]any{"type": "string", "description": "Destination filename. Trailing '/' copies into a folder using the source basename."},
-	// 		},
-	// 		"required": []string{"namespace", "filename", "new_filename"},
-	// 	},
-	// },
+	// The copy, comments, review, and reject tools are handled by runTool but
+	// deliberately unadvertised: approver actions live in the UI.
 	{
-		"name":        "archive",
-		"description": "Move a file to the archived/ prefix, excluded from search and list by default. Use for files you may reread but don't need day-to-day. Pass include_archive=true to see them again.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string"},
+		Name:        "archive",
+		Description: "Move a file to the archived/ prefix, excluded from search and list by default. Use for files you may reread but don't need day-to-day. Pass include_archive=true to see them again.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string"},
 			},
-			"required": []string{"namespace", "filename"},
+			Required: []string{"namespace", "filename"},
 		},
 	},
 	{
-		"name":        "remove",
-		"description": "Delete a file",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string"},
+		Name:        "remove",
+		Description: "Delete a file",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string"},
 			},
-			"required": []string{"namespace", "filename"},
+			Required: []string{"namespace", "filename"},
 		},
 	},
 	{
-		"name":        "move",
-		"description": "Rename or move a file. Destination may be a different namespace and/or folder (use slashes to change folders). Fails if the destination exists.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
-				"filename":      map[string]any{"type": "string", "description": "Source filename"},
-				"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source)"},
-				"new_filename":  map[string]any{"type": "string", "description": "Destination filename, may contain slashes"},
+		Name:        "move",
+		Description: "Rename or move a file. Destination may be a different namespace and/or folder (use slashes to change folders). Fails if the destination exists.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace":     {Type: "string", Description: "Source namespace"},
+				"filename":      {Type: "string", Description: "Source filename"},
+				"new_namespace": {Type: "string", Description: "Destination namespace (defaults to source)"},
+				"new_filename":  {Type: "string", Description: "Destination filename, may contain slashes"},
 			},
-			"required": []string{"namespace", "filename", "new_filename"},
+			Required: []string{"namespace", "filename", "new_filename"},
 		},
 	},
 	{
-		"name":        "search",
-		"description": "Full-text search; returns matching files with snippet previews. FTS5 syntax: loose keyword by default, \"double quotes\" for phrase, AND/OR/NOT for boolean. Also matches a file's basename, not its folder path. Use `path` for glob-scoped search. Pass namespace=\"*\" to search every namespace at once (hits include their namespace). Excludes archived/ (pass include_archive=true)",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace":       map[string]any{"type": "string", "description": "Namespace to search. Pass \"*\" to search across all namespaces."},
-				"query":           map[string]any{"type": "string", "description": "FTS5 MATCH expression. Loose keyword by default; \"phrase\" for adjacency; AND/OR/NOT for boolean."},
-				"path":            map[string]any{"type": "string", "description": "Optional doublestar glob over filename, e.g. \"tasks/**\" or \"decisions/*.md\"."},
-				"limit":           map[string]any{"type": "integer", "description": "Page size. Default 20, hard cap 100."},
-				"order":           map[string]any{"type": "string", "description": "\"bm25\" (default, relevance) or \"recency\" (updated_at DESC)."},
-				"include_archive": map[string]any{"type": "boolean", "description": "Include the archived/ prefix. Defaults to false."},
+		Name:        "search",
+		Description: "Full-text search; returns matching files with snippet previews. FTS5 syntax: loose keyword by default, \"double quotes\" for phrase, AND/OR/NOT for boolean. Also matches a file's basename, not its folder path. Use `path` for glob-scoped search. Pass namespace=\"*\" to search every namespace at once (hits include their namespace). Excludes archived/ (pass include_archive=true)",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace":       {Type: "string", Description: "Namespace to search. Pass \"*\" to search across all namespaces."},
+				"query":           {Type: "string", Description: "FTS5 MATCH expression. Loose keyword by default; \"phrase\" for adjacency; AND/OR/NOT for boolean."},
+				"path":            {Type: "string", Description: "Optional doublestar glob over filename, e.g. \"tasks/**\" or \"decisions/*.md\"."},
+				"limit":           {Type: "integer", Description: "Page size. Default 20, hard cap 100."},
+				"order":           {Type: "string", Description: "\"bm25\" (default, relevance) or \"recency\" (updated_at DESC)."},
+				"include_archive": {Type: "boolean", Description: "Include the archived/ prefix. Defaults to false."},
 			},
-			"required": []string{"namespace", "query"},
+			Required: []string{"namespace", "query"},
 		},
 	},
-	// {
-	// 	"name":        "comments",
-	// 	"description": "List edit-changelog comments on a file (or across a namespace if filename is omitted). Returns rows newest first. Defaults to unreviewed only, 20 most recent.",
-	// 	"inputSchema": map[string]any{
-	// 		"type": "object",
-	// 		"properties": map[string]any{
-	// 			"namespace":        map[string]any{"type": "string"},
-	// 			"filename":         map[string]any{"type": "string", "description": "Optional. Scope to one file."},
-	// 			"include_reviewed": map[string]any{"type": "boolean", "description": "Include reviewed comments. Defaults to false."},
-	// 			"limit":            map[string]any{"type": "integer", "description": "Page size (default 20)."},
-	// 			"offset":           map[string]any{"type": "integer", "description": "Pagination offset (default 0)."},
-	// 		},
-	// 		"required": []string{"namespace"},
-	// 	},
-	// },
-	// {
-	// 	"name":        "review",
-	// 	"description": "Accept the pending change on a file: copy `new` → `old`, clear `new`, mark this file's open comments reviewed. Errors if the file has no pending change.",
-	// 	"inputSchema": map[string]any{
-	// 		"type": "object",
-	// 		"properties": map[string]any{
-	// 			"namespace": map[string]any{"type": "string"},
-	// 			"filename":  map[string]any{"type": "string", "description": filenameDescription},
-	// 		},
-	// 		"required": []string{"namespace", "filename"},
-	// 	},
-	// },
-	// {
-	// 	"name":        "reject",
-	// 	"description": "Revert the pending change on a file: clear `new`, mark this file's open comments reviewed. The content reverts to the last reviewed `old`. Errors if the file has no pending change.",
-	// 	"inputSchema": map[string]any{
-	// 		"type": "object",
-	// 		"properties": map[string]any{
-	// 			"namespace": map[string]any{"type": "string"},
-	// 			"filename":  map[string]any{"type": "string", "description": filenameDescription},
-	// 		},
-	// 		"required": []string{"namespace", "filename"},
-	// 	},
-	// },
 	{
-		"name":        "append_to_section",
-		"description": "Append content to the end of a named section's body, just before the next heading at the same or shallower depth (deeper sub-sections stay inside). On section miss, errors and lists available slugs unless create_if_missing=true, in which case a new ## section is appended at end of file. Ambiguous matches (same heading appears more than once) error rather than guess.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace":         map[string]any{"type": "string"},
-				"filename":          map[string]any{"type": "string", "description": filenameDescription},
-				"section":           map[string]any{"type": "string", "description": "Canonical slug (\"phase-10-design\") or heading text (\"Phase 10 design\"). Ambiguous matches error; specify an exact slug to disambiguate."},
-				"content":           map[string]any{"type": "string"},
-				"create_if_missing": map[string]any{"type": "boolean", "description": "Create the section as a new ## heading at end of file when it doesn't exist. Defaults to false."},
-				"comment":           map[string]any{"type": "string", "description": commentDescription},
+		Name:        "append_to_section",
+		Description: "Append content to the end of a named section's body, just before the next heading at the same or shallower depth (deeper sub-sections stay inside). On section miss, errors and lists available slugs unless create_if_missing=true, in which case a new ## section is appended at end of file. Ambiguous matches (same heading appears more than once) error rather than guess.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace":         {Type: "string"},
+				"filename":          {Type: "string", Description: filenameDescription},
+				"section":           {Type: "string", Description: "Canonical slug (\"phase-10-design\") or heading text (\"Phase 10 design\"). Ambiguous matches error; specify an exact slug to disambiguate."},
+				"content":           {Type: "string"},
+				"create_if_missing": {Type: "boolean", Description: "Create the section as a new ## heading at end of file when it doesn't exist. Defaults to false."},
+				"comment":           {Type: "string", Description: commentDescription},
 			},
-			"required": []string{"namespace", "filename", "section", "content"},
+			Required: []string{"namespace", "filename", "section", "content"},
 		},
 	},
 	{
-		"name":        "upsert_section",
-		"description": "Replace the entire body of a named section with new content, leaving its heading line untouched. If the section doesn't exist, creates it as a new ## section appended at end of file. Ambiguous matches (same heading appears more than once) error rather than guess.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"namespace": map[string]any{"type": "string"},
-				"filename":  map[string]any{"type": "string", "description": filenameDescription},
-				"section":   map[string]any{"type": "string", "description": "Canonical slug or heading text. Ambiguous matches error; specify an exact slug to disambiguate."},
-				"content":   map[string]any{"type": "string", "description": "New body for the section (everything after the heading line). May include sub-headings. Replaces the old body entirely."},
-				"comment":   map[string]any{"type": "string", "description": commentDescription},
+		Name:        "upsert_section",
+		Description: "Replace the entire body of a named section with new content, leaving its heading line untouched. If the section doesn't exist, creates it as a new ## section appended at end of file. Ambiguous matches (same heading appears more than once) error rather than guess.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"namespace": {Type: "string"},
+				"filename":  {Type: "string", Description: filenameDescription},
+				"section":   {Type: "string", Description: "Canonical slug or heading text. Ambiguous matches error; specify an exact slug to disambiguate."},
+				"content":   {Type: "string", Description: "New body for the section (everything after the heading line). May include sub-headings. Replaces the old body entirely."},
+				"comment":   {Type: "string", Description: commentDescription},
 			},
-			"required": []string{"namespace", "filename", "section", "content"},
+			Required: []string{"namespace", "filename", "section", "content"},
 		},
 	},
 	{
-		"name":        "move_many",
-		"description": "mv (batch) - Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back.",
-		"inputSchema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"moves": map[string]any{
-					"type":        "array",
-					"description": "Array of move operations to perform atomically.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"namespace":     map[string]any{"type": "string", "description": "Source namespace"},
-							"filename":      map[string]any{"type": "string", "description": "Source filename"},
-							"new_namespace": map[string]any{"type": "string", "description": "Destination namespace (defaults to source namespace if omitted)"},
-							"new_filename":  map[string]any{"type": "string", "description": "Destination filename"},
+		Name:        "move_many",
+		Description: "mv (batch) - Rename or move multiple files atomically in a single transaction. If any move fails (e.g. destination already exists, source not found), all moves are rolled back.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]property{
+				"moves": {
+					Type:        "array",
+					Description: "Array of move operations to perform atomically.",
+					Items: &inputSchema{
+						Type: "object",
+						Properties: map[string]property{
+							"namespace":     {Type: "string", Description: "Source namespace"},
+							"filename":      {Type: "string", Description: "Source filename"},
+							"new_namespace": {Type: "string", Description: "Destination namespace (defaults to source namespace if omitted)"},
+							"new_filename":  {Type: "string", Description: "Destination filename"},
 						},
-						"required": []string{"namespace", "filename", "new_filename"},
+						Required: []string{"namespace", "filename", "new_filename"},
 					},
 				},
 			},
-			"required": []string{"moves"},
+			Required: []string{"moves"},
 		},
 	},
 }
 
-func intArg(args map[string]any, key string, def int) int {
-	v, ok := args[key]
+// ── Tool results ──────────────────────────────────────────────────────────────
+
+// errResult is the uniform error payload for every tool. Beyond Error, the
+// optional fields carry recovery hints: candidate lists, close matches, and
+// ambiguity details — present only when the specific miss produces them.
+type errResult struct {
+	Error       string       `json:"error"`
+	Available   []string     `json:"available,omitempty"`
+	Suggestions []string     `json:"suggestions,omitempty"`
+	Count       int          `json:"count,omitempty"`
+	Matches     int          `json:"matches,omitempty"`
+	Conflicts   []sectionRef `json:"conflicts,omitempty"`
+}
+
+type sectionRef struct {
+	Slug    string `json:"slug"`
+	Heading string `json:"heading"`
+}
+
+type okResult struct {
+	OK bool `json:"ok"`
+}
+
+type moveManyResult struct {
+	OK    bool `json:"ok"`
+	Moved int  `json:"moved"`
+}
+
+type readResult struct {
+	Content   string `json:"content"`
+	UpdatedAt string `json:"updated_at"`
+	Section   string `json:"section,omitempty"`
+}
+
+type nsFile struct {
+	Content   string `json:"content"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type bootResult struct {
+	Namespace string   `json:"namespace"`
+	Index     *nsFile  `json:"index,omitempty"`
+	State     *nsFile  `json:"state,omitempty"`
+	Missing   []string `json:"missing,omitempty"`
+}
+
+type namespacesResult struct {
+	Namespaces []string `json:"namespaces"`
+}
+
+type treeResult struct {
+	Tree string `json:"tree"`
+}
+
+type searchResult struct {
+	Results []SearchHit `json:"results"`
+}
+
+type commentsResult struct {
+	Comments []Comment `json:"comments"`
+}
+
+type sectionResult struct {
+	Section string `json:"section"`
+	Content string `json:"content"`
+}
+
+// ── Argument access ───────────────────────────────────────────────────────────
+
+type toolArgs map[string]any
+
+func (a toolArgs) str(key string) string {
+	v, _ := a[key].(string)
+	return v
+}
+
+// ns returns the named argument lowercased — namespaces are case-insensitive.
+func (a toolArgs) ns(key string) string {
+	return strings.ToLower(a.str(key))
+}
+
+func (a toolArgs) boolean(key string) bool {
+	v, _ := a[key].(bool)
+	return v
+}
+
+func (a toolArgs) integer(key string, def int) int {
+	v, ok := a[key]
 	if !ok {
 		return def
 	}
@@ -294,18 +349,17 @@ func intArg(args map[string]any, key string, def int) int {
 	return def
 }
 
+// ── Shared error builders ─────────────────────────────────────────────────────
+
 // namespaceMissError builds the "namespace doesn't exist" recovery payload: the
 // full namespace list (the same set `namespaces` returns) plus close-match
 // suggestions. Shared by read and boot so a bad namespace reports identically.
-func namespaceMissError(namespace string, nsList []string) map[string]any {
-	resp := map[string]any{
-		"error":     fmt.Sprintf("namespace %q does not exist", namespace),
-		"available": nsList,
+func namespaceMissError(namespace string, nsList []string) errResult {
+	return errResult{
+		Error:       fmt.Sprintf("namespace %q does not exist", namespace),
+		Available:   nsList,
+		Suggestions: closeMatches(namespace, nsList, 5),
 	}
-	if hits := closeMatches(namespace, nsList, 5); len(hits) > 0 {
-		resp["suggestions"] = hits
-	}
-	return resp
 }
 
 // readMissError distinguishes the two ways a read can miss — the namespace
@@ -316,10 +370,10 @@ func namespaceMissError(namespace string, nsList []string) map[string]any {
 // set `namespaces` returns) plus close-match `suggestions`, and a file miss
 // lists the namespace's files — falling back to the closest matches plus a total
 // `count` when that list is long.
-func readMissError(store Store, namespace, filename string) map[string]any {
+func readMissError(store *SQLiteStore, namespace, filename string) errResult {
 	nsList, err := store.ListNamespaces()
 	if err != nil {
-		return map[string]any{"error": err.Error()}
+		return errResult{Error: err.Error()}
 	}
 	if !slices.Contains(nsList, namespace) {
 		return namespaceMissError(namespace, nsList)
@@ -327,18 +381,18 @@ func readMissError(store Store, namespace, filename string) map[string]any {
 	// Namespace exists, so the filename is the wrong half.
 	files, err := store.List(namespace)
 	if err != nil {
-		return map[string]any{"error": err.Error()}
+		return errResult{Error: err.Error()}
 	}
 	names := make([]string, len(files))
 	for i, f := range files {
 		names[i] = f.Filename
 	}
-	resp := map[string]any{
-		"error": fmt.Sprintf("file %q not found in namespace %q", filename, namespace),
+	resp := errResult{
+		Error: fmt.Sprintf("file %q not found in namespace %q", filename, namespace),
 	}
 	const fileListCap = 20
 	if len(names) <= fileListCap {
-		resp["available"] = names
+		resp.Available = names
 	} else {
 		// Too many to dump verbatim: surface the closest matches and the total
 		// so the response stays compact but still points somewhere useful.
@@ -346,619 +400,530 @@ func readMissError(store Store, namespace, filename string) map[string]any {
 		if len(hits) == 0 {
 			hits = names[:fileListCap]
 		}
-		resp["available"] = hits
-		resp["count"] = len(names)
+		resp.Available = hits
+		resp.Count = len(names)
 	}
 	return resp
 }
 
-func runTool(store Store, name string, args map[string]any) (result any, isError bool) {
-	str := func(key string) string {
-		v, _ := args[key].(string)
-		return v
+// storeError maps the store's sentinel errors to their tool-facing messages;
+// anything unrecognized passes through verbatim.
+func storeError(err error) errResult {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return errResult{Error: "not found"}
+	case errors.Is(err, ErrExists):
+		return errResult{Error: "file already exists"}
+	case errors.Is(err, ErrDestinationExists):
+		return errResult{Error: "destination already exists"}
+	case errors.Is(err, ErrNoPending):
+		return errResult{Error: "no pending changes"}
 	}
-	nsStr := func(key string) string {
-		return strings.ToLower(str(key))
+	return errResult{Error: err.Error()}
+}
+
+// ── Dispatch ──────────────────────────────────────────────────────────────────
+
+// toolEntry pairs a tool's handler with the validation every call must pass
+// first. needsNS/needsContent hoist the checks that used to be pasted into
+// every case; autoComment appends the optional changelog comment after a
+// successful write so no tool forgets (or silently drops) it.
+type toolEntry struct {
+	needsNS      bool
+	needsContent bool
+	autoComment  bool
+	run          func(s *SQLiteStore, a toolArgs) (any, bool)
+}
+
+var toolRunners = map[string]toolEntry{
+	"read":              {needsNS: true, run: toolRead},
+	"boot":              {needsNS: true, run: toolBoot},
+	"create":            {needsNS: true, needsContent: true, autoComment: true, run: toolCreate},
+	"force_write":       {needsNS: true, needsContent: true, autoComment: true, run: toolForceWrite},
+	"append":            {needsNS: true, needsContent: true, autoComment: true, run: toolAppend},
+	"edit":              {needsNS: true, autoComment: true, run: toolEdit},
+	"comments":          {needsNS: true, run: toolComments},
+	"review":            {needsNS: true, run: toolReview},
+	"reject":            {needsNS: true, run: toolReject},
+	"namespaces":        {run: toolNamespaces},
+	"tree":              {needsNS: true, run: toolTree},
+	"archive":           {needsNS: true, run: toolArchive},
+	"remove":            {needsNS: true, run: toolRemove},
+	"copy":              {needsNS: true, run: toolCopy},
+	"move":              {needsNS: true, run: toolMove},
+	"move_many":         {run: toolMoveMany},
+	"search":            {run: toolSearch},
+	"append_to_section": {needsNS: true, needsContent: true, autoComment: true, run: toolAppendToSection},
+	"upsert_section":    {needsNS: true, autoComment: true, run: toolUpsertSection},
+}
+
+func runTool(store *SQLiteStore, name string, args map[string]any) (result any, isError bool) {
+	entry, ok := toolRunners[name]
+	if !ok {
+		return errResult{Error: fmt.Sprintf("unknown tool: %s", name)}, true
 	}
-
-	switch name {
-	case "read":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
+	a := toolArgs(args)
+	if entry.needsNS && a.ns("namespace") == "" {
+		return errResult{Error: "missing required argument: namespace"}, true
+	}
+	if entry.needsContent && a.str("content") == "" {
+		return errResult{Error: "missing required argument: content"}, true
+	}
+	result, isError = entry.run(store, a)
+	if !isError && entry.autoComment {
+		if c := a.str("comment"); c != "" {
+			if err := store.InsertComment(a.ns("namespace"), a.str("filename"), c); err != nil {
+				return errResult{Error: err.Error()}, true
+			}
 		}
-		content, updatedAt, err := store.Read(ns, str("filename"))
+	}
+	return result, isError
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+func toolRead(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	content, updatedAt, err := s.Read(ns, a.str("filename"))
+	if errors.Is(err, ErrNotFound) {
+		return readMissError(s, ns, a.str("filename")), true
+	}
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	if sectionQ := a.str("section"); sectionQ != "" {
+		sections := parseSections([]byte(content))
+		found, avail := findSection(sections, sectionQ)
+		if found == nil {
+			return errResult{Error: "section not found", Available: avail}, true
+		}
+		return readResult{
+			Content:   content[found.Start:found.End],
+			UpdatedAt: updatedAt,
+			Section:   found.Slug,
+		}, false
+	}
+	return readResult{Content: content, UpdatedAt: updatedAt}, false
+}
+
+func toolBoot(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	nsList, err := s.ListNamespaces()
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	if !slices.Contains(nsList, ns) {
+		return namespaceMissError(ns, nsList), true
+	}
+	// Namespace exists: pull both session-context files in one shot. A file
+	// that's absent isn't an error — it's reported in `missing` so a freshly
+	// created namespace can still boot.
+	out := bootResult{Namespace: ns}
+	for _, fn := range []string{"index.md", "state.md"} {
+		content, updatedAt, err := s.Read(ns, fn)
 		if errors.Is(err, ErrNotFound) {
-			return readMissError(store, ns, str("filename")), true
+			out.Missing = append(out.Missing, fn)
+			continue
 		}
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return errResult{Error: err.Error()}, true
 		}
-		if sectionQ := str("section"); sectionQ != "" {
-			sections := parseSections([]byte(content))
-			found, avail := findSection(sections, sectionQ)
-			if found == nil {
-				return map[string]any{"error": "section not found", "available": avail}, true
-			}
-			return map[string]any{
-				"content":    content[found.Start:found.End],
-				"updated_at": updatedAt,
-				"section":    found.Slug,
-			}, false
-		}
-		return map[string]string{"content": content, "updated_at": updatedAt}, false
-
-	case "boot":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		nsList, err := store.ListNamespaces()
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		if !slices.Contains(nsList, ns) {
-			return namespaceMissError(ns, nsList), true
-		}
-		// Namespace exists: pull both session-context files in one shot. A file
-		// that's absent isn't an error — it's reported in `missing` so a freshly
-		// created namespace can still boot.
-		out := map[string]any{"namespace": ns}
-		var missing []string
-		for _, fn := range []string{"index.md", "state.md"} {
-			content, updatedAt, err := store.Read(ns, fn)
-			if errors.Is(err, ErrNotFound) {
-				missing = append(missing, fn)
-				continue
-			}
-			if err != nil {
-				return map[string]string{"error": err.Error()}, true
-			}
-			out[strings.TrimSuffix(fn, ".md")] = map[string]string{"content": content, "updated_at": updatedAt}
-		}
-		if len(missing) > 0 {
-			out["missing"] = missing
-		}
-		return out, false
-
-	case "edit":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		oldStr := normalizeLineEndings(str("old_str"))
-		newStr := normalizeLineEndings(str("new_str"))
-		if oldStr == "" {
-			return map[string]string{"error": "old_str cannot be empty"}, true
-		}
-		content, _, err := store.Read(ns, filename)
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		count := strings.Count(content, oldStr)
-		if count == 0 {
-			return map[string]string{"error": "old_str not found in file"}, true
-		}
-		if count > 1 {
-			return map[string]any{"error": fmt.Sprintf("old_str matches %d times; must be unique", count), "matches": count}, true
-		}
-		if err := store.Write(ns, filename, strings.Replace(content, oldStr, newStr, 1)); err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		if c := str("comment"); c != "" {
-			if err := store.InsertComment(ns, filename, c); err != nil {
-				return map[string]string{"error": err.Error()}, true
-			}
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "create":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		if _, present := args["content"]; !present || str("content") == "" {
-			return map[string]string{"error": "missing required argument: content"}, true
-		}
-		if err := store.Create(ns, filename, str("content")); err != nil {
-			if errors.Is(err, ErrExists) {
-				return map[string]string{"error": "file already exists"}, true
-			}
-			return map[string]string{"error": err.Error()}, true
-		}
-		if c := str("comment"); c != "" {
-			if err := store.InsertComment(ns, filename, c); err != nil {
-				return map[string]string{"error": err.Error()}, true
-			}
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "force_write":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		if _, present := args["content"]; !present || str("content") == "" {
-			return map[string]string{"error": "missing required argument: content"}, true
-		}
-		if err := store.ForceWrite(ns, filename, str("content")); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return map[string]string{"error": "not found"}, true
-			}
-			return map[string]string{"error": err.Error()}, true
-		}
-		if c := str("comment"); c != "" {
-			if err := store.InsertComment(ns, filename, c); err != nil {
-				return map[string]string{"error": err.Error()}, true
-			}
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "append":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		if _, present := args["content"]; !present || str("content") == "" {
-			return map[string]string{"error": "missing required argument: content"}, true
-		}
-		if err := store.Append(ns, filename, str("content")); err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		if c := str("comment"); c != "" {
-			if err := store.InsertComment(ns, filename, c); err != nil {
-				return map[string]string{"error": err.Error()}, true
-			}
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "comments":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		includeReviewed, _ := args["include_reviewed"].(bool)
-		limit := intArg(args, "limit", 20)
-		offset := intArg(args, "offset", 0)
-		rows, err := store.ListComments(ns, filename, includeReviewed, limit, offset)
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]any{"comments": rows}, false
-
-	case "review":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		err := store.Review(ns, str("filename"))
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if errors.Is(err, ErrNoPending) {
-			return map[string]string{"error": "no pending changes"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "reject":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		err := store.Reject(ns, str("filename"))
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if errors.Is(err, ErrNoPending) {
-			return map[string]string{"error": "no pending changes"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "namespaces":
-		nsList, err := store.ListNamespaces()
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]any{"namespaces": nsList}, false
-
-	case "tree":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		files, err := store.List(ns)
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		path := str("path")
-		includeArchive, _ := args["include_archive"].(bool)
-		// deleted/ is always hidden unless path explicitly targets it.
-		if !pathTargetsDeleted(path) {
-			files = excludeDeleted(files)
-		}
-		// archive/archived/ are hidden by default; include_archive=true or an
-		// explicit archive path overrides this.
-		if !includeArchive && !pathTargetsArchive(path) {
-			files = excludeArchive(files)
-		}
-
-		depth := treeDepthDefault
-		if d, ok := args["depth"]; ok {
-			switch v := d.(type) {
-			case float64:
-				depth = int(v)
-			case int:
-				depth = v
-			}
-		}
-
-		meta, _ := args["meta"].(bool)
-		globMode := isGlobPattern(path)
-		if path != "" {
-			files, err = filterByPath(files, path)
-			if err != nil {
-				return map[string]string{"error": fmt.Sprintf("invalid path: %v", err)}, true
-			}
-		}
-		tree := buildTree(files)
-
-		// Deep recursion when explicitly requested (depth=99) or for glob
-		// scopes (matches can be sparse across folders; collapsing them as
-		// "(N items)" would hide the user's actual query result).
-		var out string
-		if depth >= 99 || globMode {
-			out = renderTreeWithSections(tree, ns, store, "", true, depth, meta)
+		f := &nsFile{Content: content, UpdatedAt: updatedAt}
+		if fn == "index.md" {
+			out.Index = f
 		} else {
-			// scopePath is empty for namespace-root; otherwise the literal
-			// folder/file path. (Glob already routed above.)
-			out = renderTreeShallow(tree, path, ns, store, depth, meta)
+			out.State = f
 		}
-		return map[string]string{"tree": strings.TrimRight(out, "\n")}, false
+	}
+	return out, false
+}
 
-	case "archive":
-		srcNS := nsStr("namespace")
-		if srcNS == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		srcFile := str("filename")
-		dstFile := "archived/" + srcFile
-		err := store.MoveForReview([]MoveOp{{srcNS, srcFile, srcNS, dstFile}})
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if errors.Is(err, ErrDestinationExists) {
-			return map[string]string{"error": "destination already exists"}, true
-		}
+func toolEdit(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	filename := a.str("filename")
+	oldStr := normalizeLineEndings(a.str("old_str"))
+	newStr := normalizeLineEndings(a.str("new_str"))
+	if oldStr == "" {
+		return errResult{Error: "old_str cannot be empty"}, true
+	}
+	content, _, err := s.Read(ns, filename)
+	if err != nil {
+		return storeError(err), true
+	}
+	count := strings.Count(content, oldStr)
+	if count == 0 {
+		return errResult{Error: "old_str not found in file"}, true
+	}
+	if count > 1 {
+		return errResult{
+			Error:   fmt.Sprintf("old_str matches %d times; must be unique", count),
+			Matches: count,
+		}, true
+	}
+	if err := s.Write(ns, filename, strings.Replace(content, oldStr, newStr, 1)); err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolCreate(s *SQLiteStore, a toolArgs) (any, bool) {
+	if err := s.Create(a.ns("namespace"), a.str("filename"), a.str("content")); err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolForceWrite(s *SQLiteStore, a toolArgs) (any, bool) {
+	if err := s.ForceWrite(a.ns("namespace"), a.str("filename"), a.str("content")); err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolAppend(s *SQLiteStore, a toolArgs) (any, bool) {
+	if err := s.Append(a.ns("namespace"), a.str("filename"), a.str("content")); err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolComments(s *SQLiteStore, a toolArgs) (any, bool) {
+	rows, err := s.ListComments(
+		a.ns("namespace"), a.str("filename"), a.boolean("include_reviewed"),
+		a.integer("limit", 20), a.integer("offset", 0),
+	)
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return commentsResult{Comments: rows}, false
+}
+
+func toolReview(s *SQLiteStore, a toolArgs) (any, bool) {
+	if err := s.Review(a.ns("namespace"), a.str("filename")); err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolReject(s *SQLiteStore, a toolArgs) (any, bool) {
+	if err := s.Reject(a.ns("namespace"), a.str("filename")); err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolNamespaces(s *SQLiteStore, a toolArgs) (any, bool) {
+	nsList, err := s.ListNamespaces()
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return namespacesResult{Namespaces: nsList}, false
+}
+
+func toolTree(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	files, err := s.List(ns)
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	path := a.str("path")
+	// deleted/ is always hidden unless path explicitly targets it.
+	if !pathTargetsDeleted(path) {
+		files = excludeDeleted(files)
+	}
+	// archive/archived/ are hidden by default; include_archive=true or an
+	// explicit archive path overrides this.
+	if !a.boolean("include_archive") && !pathTargetsArchive(path) {
+		files = excludeArchive(files)
+	}
+
+	depth := a.integer("depth", treeDepthDefault)
+	meta := a.boolean("meta")
+	globMode := isGlobPattern(path)
+	if path != "" {
+		files, err = filterByPath(files, path)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return errResult{Error: fmt.Sprintf("invalid path: %v", err)}, true
 		}
-		return map[string]bool{"ok": true}, false
+	}
+	tree := buildTree(files)
 
-	case "remove":
-		srcNS := nsStr("namespace")
-		if srcNS == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		srcFile := str("filename")
-		dstFile := "deleted/" + srcFile
-		err := store.MoveForReview([]MoveOp{{srcNS, srcFile, srcNS, dstFile}})
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if errors.Is(err, ErrDestinationExists) {
-			return map[string]string{"error": "destination already exists"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]bool{"ok": true}, false
+	// Deep recursion when explicitly requested (depth=99) or for glob
+	// scopes (matches can be sparse across folders; collapsing them as
+	// "(N items)" would hide the user's actual query result).
+	var out string
+	if depth >= 99 || globMode {
+		out = renderTreeWithSections(tree, ns, s, "", true, depth, meta)
+	} else {
+		// scopePath is empty for namespace-root; otherwise the literal
+		// folder/file path. (Glob already routed above.)
+		out = renderTreeShallow(tree, path, ns, s, depth, meta)
+	}
+	return treeResult{Tree: strings.TrimRight(out, "\n")}, false
+}
 
-	case "copy":
-		srcNS := nsStr("namespace")
-		if srcNS == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
+func toolArchive(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	srcFile := a.str("filename")
+	if err := s.MoveForReview([]MoveOp{{ns, srcFile, ns, "archived/" + srcFile}}); err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolRemove(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	srcFile := a.str("filename")
+	if err := s.MoveForReview([]MoveOp{{ns, srcFile, ns, "deleted/" + srcFile}}); err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolCopy(s *SQLiteStore, a toolArgs) (any, bool) {
+	srcNS := a.ns("namespace")
+	dstNS := a.ns("new_namespace")
+	if dstNS == "" {
+		dstNS = srcNS
+	}
+	dstFile := a.str("new_filename")
+	if strings.HasSuffix(dstFile, "/") {
+		parts := strings.Split(a.str("filename"), "/")
+		dstFile += parts[len(parts)-1]
+	}
+	err := s.Copy(srcNS, a.str("filename"), dstNS, dstFile)
+	if errors.Is(err, ErrNotFound) {
+		return errResult{Error: "source not found"}, true
+	}
+	if err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolMove(s *SQLiteStore, a toolArgs) (any, bool) {
+	srcNS := a.ns("namespace")
+	dstNS := a.ns("new_namespace")
+	if dstNS == "" {
+		dstNS = srcNS
+	}
+	err := s.MoveForReview([]MoveOp{{
+		SrcNamespace: srcNS,
+		SrcFilename:  a.str("filename"),
+		DstNamespace: dstNS,
+		DstFilename:  a.str("new_filename"),
+	}})
+	if errors.Is(err, ErrNotFound) {
+		return errResult{Error: "source not found"}, true
+	}
+	if err != nil {
+		return storeError(err), true
+	}
+	return okResult{OK: true}, false
+}
+
+func toolMoveMany(s *SQLiteStore, a toolArgs) (any, bool) {
+	raw, _ := a["moves"].([]any)
+	ops := make([]MoveOp, 0, len(raw))
+	for i, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return errResult{Error: fmt.Sprintf("moves[%d] is not an object", i)}, true
 		}
-		dstNS := nsStr("new_namespace")
+		move := toolArgs(m)
+		srcNS := move.ns("namespace")
+		dstNS := move.ns("new_namespace")
 		if dstNS == "" {
 			dstNS = srcNS
 		}
-		dstFile := str("new_filename")
-		if strings.HasSuffix(dstFile, "/") {
-			parts := strings.Split(str("filename"), "/")
-			dstFile += parts[len(parts)-1]
-		}
-		err := store.Copy(srcNS, str("filename"), dstNS, dstFile)
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "source not found"}, true
-		}
-		if errors.Is(err, ErrDestinationExists) {
-			return map[string]string{"error": "destination already exists"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "move":
-		srcNS := nsStr("namespace")
-		if srcNS == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		dstNS := nsStr("new_namespace")
-		if dstNS == "" {
-			dstNS = srcNS
-		}
-		err := store.MoveForReview([]MoveOp{{
+		ops = append(ops, MoveOp{
 			SrcNamespace: srcNS,
-			SrcFilename:  str("filename"),
+			SrcFilename:  move.str("filename"),
 			DstNamespace: dstNS,
-			DstFilename:  str("new_filename"),
-		}})
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "source not found"}, true
-		}
-		if errors.Is(err, ErrDestinationExists) {
-			return map[string]string{"error": "destination already exists"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]bool{"ok": true}, false
-
-	case "move_many":
-		raw, _ := args["moves"].([]any)
-		ops := make([]MoveOp, 0, len(raw))
-		for i, item := range raw {
-			m, ok := item.(map[string]any)
-			if !ok {
-				return map[string]string{"error": fmt.Sprintf("moves[%d] is not an object", i)}, true
-			}
-			get := func(k string) string {
-				v, _ := m[k].(string)
-				return v
-			}
-			srcNS := strings.ToLower(get("namespace"))
-			dstNS := strings.ToLower(get("new_namespace"))
-			if dstNS == "" {
-				dstNS = srcNS
-			}
-			ops = append(ops, MoveOp{
-				SrcNamespace: srcNS,
-				SrcFilename:  get("filename"),
-				DstNamespace: dstNS,
-				DstFilename:  get("new_filename"),
-			})
-		}
-		err := store.MoveForReview(ops)
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "a source file was not found; no moves were applied"}, true
-		}
-		if errors.Is(err, ErrDestinationExists) {
-			return map[string]string{"error": "a destination already exists; no moves were applied"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]any{"ok": true, "moved": len(ops)}, false
-
-	case "search":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace (use \"*\" to search all namespaces)"}, true
-		}
-		if ns == "*" {
-			ns = ""
-		}
-		query := str("query")
-		if query == "" {
-			return map[string]string{"error": "query required"}, true
-		}
-		includeArchive, _ := args["include_archive"].(bool)
-		hits, err := store.Search(SearchOptions{
-			Namespace:      ns,
-			Query:          query,
-			Path:           str("path"),
-			Limit:          intArg(args, "limit", 20),
-			Order:          str("order"),
-			IncludeArchive: includeArchive,
+			DstFilename:  move.str("new_filename"),
 		})
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		return map[string]any{"results": hits}, false
+	}
+	err := s.MoveForReview(ops)
+	if errors.Is(err, ErrNotFound) {
+		return errResult{Error: "a source file was not found; no moves were applied"}, true
+	}
+	if errors.Is(err, ErrDestinationExists) {
+		return errResult{Error: "a destination already exists; no moves were applied"}, true
+	}
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return moveManyResult{OK: true, Moved: len(ops)}, false
+}
 
-	case "append_to_section":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		sectionQ := str("section")
-		if sectionQ == "" {
-			return map[string]string{"error": "missing required argument: section"}, true
-		}
-		if _, present := args["content"]; !present || str("content") == "" {
-			return map[string]string{"error": "missing required argument: content"}, true
-		}
-		content := normalizeLineEndings(str("content"))
-		createIfMissing, _ := args["create_if_missing"].(bool)
+func toolSearch(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	if ns == "" {
+		return errResult{Error: "missing required argument: namespace (use \"*\" to search all namespaces)"}, true
+	}
+	if ns == "*" {
+		ns = ""
+	}
+	query := a.str("query")
+	if query == "" {
+		return errResult{Error: "query required"}, true
+	}
+	hits, err := s.Search(SearchOptions{
+		Namespace:      ns,
+		Query:          query,
+		Path:           a.str("path"),
+		Limit:          a.integer("limit", 20),
+		Order:          a.str("order"),
+		IncludeArchive: a.boolean("include_archive"),
+	})
+	if err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return searchResult{Results: hits}, false
+}
 
-		existing, _, err := store.Read(ns, filename)
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
+func toolAppendToSection(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	filename := a.str("filename")
+	sectionQ := a.str("section")
+	if sectionQ == "" {
+		return errResult{Error: "missing required argument: section"}, true
+	}
+	content := normalizeLineEndings(a.str("content"))
 
-		source := []byte(existing)
-		secs := parseSections(source)
-		found, conflicts, avail := findSectionForWrite(secs, sectionQ)
+	existing, _, err := s.Read(ns, filename)
+	if err != nil {
+		return storeError(err), true
+	}
 
-		if len(conflicts) > 0 {
-			cfList := make([]map[string]string, len(conflicts))
-			for i, c := range conflicts {
-				cfList[i] = map[string]string{"slug": c.Slug, "heading": c.Heading}
-			}
-			return map[string]any{
-				"error":     fmt.Sprintf("ambiguous section %q: %d sections share this heading; specify an exact slug", sectionQ, len(conflicts)),
-				"conflicts": cfList,
+	source := []byte(existing)
+	secs := parseSections(source)
+	found, conflicts, avail := findSectionForWrite(secs, sectionQ)
+
+	if len(conflicts) > 0 {
+		return ambiguousSectionError(sectionQ, conflicts), true
+	}
+
+	var newFile string
+	var sectionSlug string
+
+	if found == nil {
+		if !a.boolean("create_if_missing") {
+			return errResult{
+				Error:     fmt.Sprintf("section %q not found", sectionQ),
+				Available: avail,
 			}, true
 		}
-
-		var newFile string
-		var sectionSlug string
-
-		if found == nil {
-			if !createIfMissing {
-				return map[string]any{
-					"error":     fmt.Sprintf("section %q not found", sectionQ),
-					"available": avail,
-				}, true
-			}
-			// Create a new ## section at end of file then append content into it.
-			sectionSlug = slugifyHeading(sectionQ)
-			sep := "\n\n"
-			if len(existing) == 0 {
-				sep = ""
-			} else if existing[len(existing)-1] != '\n' {
-				sep = "\n\n"
-			}
-			if len(content) > 0 && content[len(content)-1] != '\n' {
-				content += "\n"
-			}
-			newFile = existing + sep + "## " + sectionQ + "\n\n" + content
-		} else {
-			sectionSlug = found.Slug
-			// Insert a separating newline + content before the section boundary.
-			prefix := string(source[:found.End])
-			if len(prefix) > 0 && prefix[len(prefix)-1] != '\n' {
-				prefix += "\n"
-			}
-			if len(content) > 0 && content[len(content)-1] != '\n' {
-				content += "\n"
-			}
-			newFile = prefix + "\n" + content + string(source[found.End:])
+		// Create a new ## section at end of file then append content into it.
+		sectionSlug = slugifyHeading(sectionQ)
+		newFile = appendNewSection(existing, sectionQ, content)
+	} else {
+		sectionSlug = found.Slug
+		// Insert a separating newline + content before the section boundary.
+		prefix := string(source[:found.End])
+		if len(prefix) > 0 && prefix[len(prefix)-1] != '\n' {
+			prefix += "\n"
 		}
+		newFile = prefix + "\n" + ensureTrailingNewline(content) + string(source[found.End:])
+	}
 
-		if err := store.Write(ns, filename, newFile); err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		if c := str("comment"); c != "" {
-			_ = store.InsertComment(ns, filename, c)
-		}
+	if err := s.Write(ns, filename, newFile); err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return updatedSectionResult(newFile, sectionSlug), false
+}
 
-		// Return the updated section bytes so the caller can verify.
-		updatedSecs := parseSections([]byte(newFile))
-		updatedFound, _, _ := findSectionForWrite(updatedSecs, sectionSlug)
-		var resultContent string
-		if updatedFound != nil {
-			resultContent = newFile[updatedFound.Start:updatedFound.End]
-		}
-		return map[string]any{"section": sectionSlug, "content": resultContent}, false
+func toolUpsertSection(s *SQLiteStore, a toolArgs) (any, bool) {
+	ns := a.ns("namespace")
+	filename := a.str("filename")
+	sectionQ := a.str("section")
+	if sectionQ == "" {
+		return errResult{Error: "missing required argument: section"}, true
+	}
+	content := normalizeLineEndings(a.str("content"))
 
-	case "upsert_section":
-		ns := nsStr("namespace")
-		if ns == "" {
-			return map[string]string{"error": "missing required argument: namespace"}, true
-		}
-		filename := str("filename")
-		sectionQ := str("section")
-		if sectionQ == "" {
-			return map[string]string{"error": "missing required argument: section"}, true
-		}
-		content := normalizeLineEndings(str("content"))
+	existing, _, err := s.Read(ns, filename)
+	if err != nil {
+		return storeError(err), true
+	}
 
-		existing, _, err := store.Read(ns, filename)
-		if errors.Is(err, ErrNotFound) {
-			return map[string]string{"error": "not found"}, true
-		}
-		if err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
+	source := []byte(existing)
+	secs := parseSections(source)
+	found, conflicts, _ := findSectionForWrite(secs, sectionQ)
 
-		source := []byte(existing)
-		secs := parseSections(source)
-		found, conflicts, _ := findSectionForWrite(secs, sectionQ)
+	if len(conflicts) > 0 {
+		return ambiguousSectionError(sectionQ, conflicts), true
+	}
 
-		if len(conflicts) > 0 {
-			cfList := make([]map[string]string, len(conflicts))
-			for i, c := range conflicts {
-				cfList[i] = map[string]string{"slug": c.Slug, "heading": c.Heading}
-			}
-			return map[string]any{
-				"error":     fmt.Sprintf("ambiguous section %q: %d sections share this heading; specify an exact slug", sectionQ, len(conflicts)),
-				"conflicts": cfList,
-			}, true
+	var newFile string
+	var sectionSlug string
+
+	if found == nil {
+		// Create a new ## section at end of file.
+		sectionSlug = slugifyHeading(sectionQ)
+		newFile = appendNewSection(existing, sectionQ, content)
+	} else {
+		sectionSlug = found.Slug
+		// Find the end of the heading line (first \n after Start).
+		headingEnd := found.Start
+		for headingEnd < found.End && source[headingEnd] != '\n' {
+			headingEnd++
 		}
-
-		var newFile string
-		var sectionSlug string
-
-		if found == nil {
-			// Create a new ## section at end of file.
-			sectionSlug = slugifyHeading(sectionQ)
-			sep := "\n\n"
-			if len(existing) == 0 {
-				sep = ""
-			} else if existing[len(existing)-1] != '\n' {
-				sep = "\n\n"
-			}
-			if len(content) > 0 && content[len(content)-1] != '\n' {
-				content += "\n"
-			}
-			newFile = existing + sep + "## " + sectionQ + "\n\n" + content
-		} else {
-			sectionSlug = found.Slug
-			// Find the end of the heading line (first \n after Start).
-			headingEnd := found.Start
-			for headingEnd < found.End && source[headingEnd] != '\n' {
-				headingEnd++
-			}
-			if headingEnd < found.End {
-				headingEnd++ // include the trailing \n of the heading line
-			}
-			// Ensure content ends with a newline so the file boundary is clean.
-			if len(content) > 0 && content[len(content)-1] != '\n' {
-				content += "\n"
-			}
-			newFile = string(source[:headingEnd]) + content + string(source[found.End:])
+		if headingEnd < found.End {
+			headingEnd++ // include the trailing \n of the heading line
 		}
+		newFile = string(source[:headingEnd]) + ensureTrailingNewline(content) + string(source[found.End:])
+	}
 
-		if err := store.Write(ns, filename, newFile); err != nil {
-			return map[string]string{"error": err.Error()}, true
-		}
-		if c := str("comment"); c != "" {
-			_ = store.InsertComment(ns, filename, c)
-		}
+	if err := s.Write(ns, filename, newFile); err != nil {
+		return errResult{Error: err.Error()}, true
+	}
+	return updatedSectionResult(newFile, sectionSlug), false
+}
 
-		// Return the updated section bytes so the caller can verify.
-		updatedSecs := parseSections([]byte(newFile))
-		updatedFound, _, _ := findSectionForWrite(updatedSecs, sectionSlug)
-		var resultContent string
-		if updatedFound != nil {
-			resultContent = newFile[updatedFound.Start:updatedFound.End]
-		}
-		return map[string]any{"section": sectionSlug, "content": resultContent}, false
+// ── Section-write helpers ─────────────────────────────────────────────────────
 
-	default:
-		return map[string]string{"error": fmt.Sprintf("unknown tool: %s", name)}, true
+func ambiguousSectionError(sectionQ string, conflicts []section) errResult {
+	refs := make([]sectionRef, len(conflicts))
+	for i, c := range conflicts {
+		refs[i] = sectionRef{Slug: c.Slug, Heading: c.Heading}
+	}
+	return errResult{
+		Error:     fmt.Sprintf("ambiguous section %q: %d sections share this heading; specify an exact slug", sectionQ, len(conflicts)),
+		Conflicts: refs,
 	}
 }
+
+// appendNewSection appends `## heading` plus content at end of file, keeping
+// the blank-line separation and trailing-newline invariants.
+func appendNewSection(existing, heading, content string) string {
+	sep := "\n\n"
+	if len(existing) == 0 {
+		sep = ""
+	}
+	return existing + sep + "## " + heading + "\n\n" + ensureTrailingNewline(content)
+}
+
+func ensureTrailingNewline(s string) string {
+	if len(s) > 0 && s[len(s)-1] != '\n' {
+		return s + "\n"
+	}
+	return s
+}
+
+// updatedSectionResult re-parses the written file and returns the section's
+// final bytes so the caller can verify the write landed as intended.
+func updatedSectionResult(newFile, sectionSlug string) sectionResult {
+	updatedSecs := parseSections([]byte(newFile))
+	updatedFound, _, _ := findSectionForWrite(updatedSecs, sectionSlug)
+	res := sectionResult{Section: sectionSlug}
+	if updatedFound != nil {
+		res.Content = newFile[updatedFound.Start:updatedFound.End]
+	}
+	return res
+}
+
+// ── Tree rendering ────────────────────────────────────────────────────────────
 
 // sectionTokenThreshold controls when section nodes get a token-count annotation
 // in tree output. Below this, the slug alone is shown; at-or-above, "(Nk)" surfaces
@@ -970,7 +935,7 @@ const sectionTokenThreshold = 400
 // `ls`-like semantics — files expand with sections, sub-folders collapse to
 // "name/ (N items)" summaries. depth=99 or glob path-mode routes through
 // renderTreeWithSections instead for full recursion.
-func renderTreeShallow(root *treeNode, scopePath, namespace string, store Store, depth int, meta bool) string {
+func renderTreeShallow(root *treeNode, scopePath, namespace string, store *SQLiteStore, depth int, meta bool) string {
 	scope := root
 	var header string
 	if scopePath != "" {
@@ -1045,7 +1010,7 @@ func countFiles(node *treeNode) int {
 // surfaces markdown headings as nested section nodes. `depth` caps which
 // heading levels appear — see keepHeadingAtDepth. depth=0 short-circuits the
 // per-file content read entirely.
-func renderTreeWithSections(node *treeNode, namespace string, store Store, prefix string, isRoot bool, depth int, meta bool) string {
+func renderTreeWithSections(node *treeNode, namespace string, store *SQLiteStore, prefix string, isRoot bool, depth int, meta bool) string {
 	var sb strings.Builder
 	for i, child := range node.Children {
 		isLast := i == len(node.Children)-1

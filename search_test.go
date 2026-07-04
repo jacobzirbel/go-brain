@@ -312,8 +312,7 @@ func TestSearchTool_StarNamespaceSearchesAll(t *testing.T) {
 	if isErr {
 		t.Fatalf("namespace=* should succeed; got error: %v", res)
 	}
-	m := res.(map[string]any)
-	hits := m["results"].([]SearchHit)
+	hits := res.(searchResult).Results
 	if len(hits) != 2 {
 		t.Fatalf("expected 2 hits across namespaces; got %d: %+v", len(hits), hits)
 	}
@@ -378,8 +377,7 @@ func TestSearchTool_ZeroResultsIsEmptyArray(t *testing.T) {
 	if isErr {
 		t.Fatal("zero results should not be an error")
 	}
-	m := res.(map[string]any)
-	hits, _ := m["results"].([]SearchHit)
+	hits := res.(searchResult).Results
 	if hits == nil {
 		t.Error("results should be empty slice, not nil")
 	}

@@ -378,20 +378,18 @@ func TestBootTool_ReturnsIndexAndState(t *testing.T) {
 	if isErr {
 		t.Fatalf("boot errored: %v", res)
 	}
-	m := res.(map[string]any)
-	if m["namespace"] != "proj" {
-		t.Errorf("expected namespace echoed, got %v", m["namespace"])
+	b := res.(bootResult)
+	if b.Namespace != "proj" {
+		t.Errorf("expected namespace echoed, got %v", b.Namespace)
 	}
-	idx, ok := m["index"].(map[string]string)
-	if !ok || idx["content"] != "INDEX BODY" {
-		t.Errorf("expected index content, got %v", m["index"])
+	if b.Index == nil || b.Index.Content != "INDEX BODY" {
+		t.Errorf("expected index content, got %v", b.Index)
 	}
-	st, ok := m["state"].(map[string]string)
-	if !ok || st["content"] != "STATE BODY" {
-		t.Errorf("expected state content, got %v", m["state"])
+	if b.State == nil || b.State.Content != "STATE BODY" {
+		t.Errorf("expected state content, got %v", b.State)
 	}
-	if _, has := m["missing"]; has {
-		t.Errorf("nothing should be missing, got %v", m["missing"])
+	if b.Missing != nil {
+		t.Errorf("nothing should be missing, got %v", b.Missing)
 	}
 }
 
@@ -402,15 +400,15 @@ func TestBootTool_NamespaceMissReturnsList(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected namespace miss to error; got %v", res)
 	}
-	m := res.(map[string]any)
-	if !strings.Contains(m["error"].(string), "does not exist") {
-		t.Errorf("error should say namespace does not exist, got %q", m["error"])
+	e := res.(errResult)
+	if !strings.Contains(e.Error, "does not exist") {
+		t.Errorf("error should say namespace does not exist, got %q", e.Error)
 	}
-	if avail, ok := m["available"].([]string); !ok || !slices.Contains(avail, "projects") {
-		t.Errorf("expected available to include projects, got %v", m["available"])
+	if !slices.Contains(e.Available, "projects") {
+		t.Errorf("expected available to include projects, got %v", e.Available)
 	}
-	if sugg, ok := m["suggestions"].([]string); !ok || len(sugg) == 0 || sugg[0] != "projects" {
-		t.Errorf("expected projects suggested, got %v", m["suggestions"])
+	if len(e.Suggestions) == 0 || e.Suggestions[0] != "projects" {
+		t.Errorf("expected projects suggested, got %v", e.Suggestions)
 	}
 }
 
@@ -422,16 +420,15 @@ func TestBootTool_MissingBootFilesNotAnError(t *testing.T) {
 	if isErr {
 		t.Fatalf("boot should not error when the namespace exists: %v", res)
 	}
-	m := res.(map[string]any)
-	if _, ok := m["index"]; !ok {
+	b := res.(bootResult)
+	if b.Index == nil {
 		t.Error("expected index to be present")
 	}
-	if _, ok := m["state"]; ok {
+	if b.State != nil {
 		t.Error("state.md is absent — it should not appear")
 	}
-	missing, ok := m["missing"].([]string)
-	if !ok || !slices.Contains(missing, "state.md") {
-		t.Errorf("expected state.md reported in missing, got %v", m["missing"])
+	if !slices.Contains(b.Missing, "state.md") {
+		t.Errorf("expected state.md reported in missing, got %v", b.Missing)
 	}
 }
 
@@ -446,24 +443,18 @@ func TestReadTool_NamespaceMissListsAndSuggests(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected namespace miss to error; got %v", res)
 	}
-	m := res.(map[string]any)
-	errStr := m["error"].(string)
-	if !strings.Contains(errStr, "namespace") || !strings.Contains(errStr, "does not exist") {
-		t.Errorf("error should say the namespace does not exist, got: %q", errStr)
+	e := res.(errResult)
+	if !strings.Contains(e.Error, "namespace") || !strings.Contains(e.Error, "does not exist") {
+		t.Errorf("error should say the namespace does not exist, got: %q", e.Error)
 	}
-	avail, ok := m["available"].([]string)
-	if !ok {
-		t.Fatalf("expected available namespaces list, got %T", m["available"])
+	if len(e.Available) != 2 {
+		t.Errorf("expected both namespaces listed, got %v", e.Available)
 	}
-	if len(avail) != 2 {
-		t.Errorf("expected both namespaces listed, got %v", avail)
-	}
-	sugg, ok := m["suggestions"].([]string)
-	if !ok || len(sugg) == 0 || sugg[0] != "projects" {
-		t.Errorf("expected \"projects\" suggested for \"project\", got %v", m["suggestions"])
+	if len(e.Suggestions) == 0 || e.Suggestions[0] != "projects" {
+		t.Errorf("expected \"projects\" suggested for \"project\", got %v", e.Suggestions)
 	}
 	// A namespace miss must be distinguishable from a file miss: no file count.
-	if _, has := m["count"]; has {
+	if e.Count != 0 {
 		t.Error("namespace miss should not carry a file count")
 	}
 }
@@ -479,17 +470,12 @@ func TestReadTool_FileMissListsFiles(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected file miss to error; got %v", res)
 	}
-	m := res.(map[string]any)
-	errStr := m["error"].(string)
-	if !strings.Contains(errStr, "file") || !strings.Contains(errStr, "not found") || !strings.Contains(errStr, "ns") {
-		t.Errorf("error should name the file and namespace, got: %q", errStr)
+	e := res.(errResult)
+	if !strings.Contains(e.Error, "file") || !strings.Contains(e.Error, "not found") || !strings.Contains(e.Error, "ns") {
+		t.Errorf("error should name the file and namespace, got: %q", e.Error)
 	}
-	avail, ok := m["available"].([]string)
-	if !ok {
-		t.Fatalf("expected available files list, got %T", m["available"])
-	}
-	if len(avail) != 2 {
-		t.Errorf("expected both files listed, got %v", avail)
+	if len(e.Available) != 2 {
+		t.Errorf("expected both files listed, got %v", e.Available)
 	}
 }
 
@@ -505,12 +491,11 @@ func TestReadTool_FileMissLongListTruncatesWithCount(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected file miss to error; got %v", res)
 	}
-	m := res.(map[string]any)
-	count, ok := m["count"].(int)
-	if !ok || count != 30 {
-		t.Errorf("expected count=30 for a long list, got %v", m["count"])
+	e := res.(errResult)
+	if e.Count != 30 {
+		t.Errorf("expected count=30 for a long list, got %v", e.Count)
 	}
-	avail := m["available"].([]string)
+	avail := e.Available
 	if len(avail) == 0 || len(avail) > 10 {
 		t.Errorf("expected a capped closest-match list, got %d entries: %v", len(avail), avail)
 	}

@@ -14,7 +14,7 @@ func TestTreeTool_IncludesSections(t *testing.T) {
 	if isErr {
 		t.Fatalf("tree error: %v", res)
 	}
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	// Default: depth=1 + heading-text labels (Phase 12a). H1 (# Top) is
 	// suppressed at depth=1 — filename is the conventional title.
@@ -36,7 +36,7 @@ func TestTreeTool_TokenAnnotationOnLargeSection(t *testing.T) {
 	_ = s.Write("ns", "doc.md", doc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "## Big (") {
 		t.Errorf("expected big section to be annotated with tokens; got:\n%s", out)
@@ -54,7 +54,7 @@ func TestTreeTool_NonMarkdownFolderExpansion(t *testing.T) {
 	// Phase 11.1: at root the folder collapses to (N items); explicit path
 	// expansion shows contents.
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "folder/"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"folder/", "├── a.txt", "└── b.txt"} {
 		if !strings.Contains(out, want) {
@@ -91,7 +91,7 @@ func TestTreeTool_Depth0_NoHeadings(t *testing.T) {
 	_ = s.Write("ns", "doc.md", nestedDoc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 0})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if strings.Contains(out, "#") {
 		t.Errorf("depth=0 should emit no heading lines; got:\n%s", out)
@@ -106,7 +106,7 @@ func TestTreeTool_Depth1_OnlyH2(t *testing.T) {
 	_ = s.Write("ns", "doc.md", nestedDoc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 1})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"## Top section", "## Other top"} {
 		if !strings.Contains(out, want) {
@@ -125,7 +125,7 @@ func TestTreeTool_Depth2_H2AndH3(t *testing.T) {
 	_ = s.Write("ns", "doc.md", nestedDoc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 2})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"## Top section", "### Sub one", "### Sub two", "## Other top"} {
 		if !strings.Contains(out, want) {
@@ -142,7 +142,7 @@ func TestTreeTool_Depth99_AllLevels(t *testing.T) {
 	_ = s.Write("ns", "doc.md", nestedDoc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 99})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"# Title", "## Top section", "### Sub one", "### Sub two", "## Other top"} {
 		if !strings.Contains(out, want) {
@@ -161,7 +161,7 @@ func TestTreeTool_DepthPreservesTokenAccuracy(t *testing.T) {
 	_ = s.Write("ns", "doc.md", doc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 1})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if strings.Contains(out, "## Small (") {
 		t.Errorf("dropped H1's bytes leaked into ## Small token count; got:\n%s", out)
@@ -176,7 +176,7 @@ func TestTreeTool_LiteralPath_SingleFile(t *testing.T) {
 	_ = s.Write("ns", "other.md", "# Other\n\n## Heading\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "doc.md"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "doc.md") {
 		t.Errorf("literal file path should include target; got:\n%s", out)
@@ -193,7 +193,7 @@ func TestTreeTool_LiteralPath_Folder(t *testing.T) {
 	_ = s.Write("ns", "outside.md", "# Outside\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "decisions/"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"a.md", "b.md"} {
 		if !strings.Contains(out, want) {
@@ -211,7 +211,7 @@ func TestTreeTool_LiteralPath_FolderWithoutTrailingSlash(t *testing.T) {
 	_ = s.Write("ns", "outside.md", "x")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "decisions"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "a.md") {
 		t.Errorf("folder scope without trailing slash should still match; got:\n%s", out)
@@ -231,7 +231,7 @@ func TestTreeTool_GlobPath_MatchesAcrossFolders(t *testing.T) {
 	_ = s.Write("ns", "state.md", "# State\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "tasks/**/index.md"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"foo/", "bar/", "index.md"} {
 		if !strings.Contains(out, want) {
@@ -253,7 +253,7 @@ func TestTreeTool_GlobPath_MatchesZero(t *testing.T) {
 	if isErr {
 		t.Fatalf("zero matches should not be an error; got %v", res)
 	}
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("zero-match glob should render empty tree; got:\n%q", out)
 	}
@@ -266,7 +266,7 @@ func TestTreeTool_GlobPath_MatchesOne(t *testing.T) {
 	_ = s.Write("ns", "other.md", "# Other\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "decisions/*.md"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "a.md") {
 		t.Errorf("single-glob-match missing target; got:\n%s", out)
@@ -281,7 +281,7 @@ func TestTreeTool_GlobPath_RespectsDepth(t *testing.T) {
 	_ = s.Write("ns", "doc.md", nestedDoc)
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "*.md", "depth": 99})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "# Title") {
 		t.Errorf("glob + depth=99 should include H1; got:\n%s", out)
@@ -298,7 +298,7 @@ func TestTreeTool_FoldersCollapseByDefault(t *testing.T) {
 	_ = s.Write("ns", "tasks/nested/c.md", "# C\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	// Root file expands with sections; folder summarizes.
 	if !strings.Contains(out, "state.md") {
@@ -325,7 +325,7 @@ func TestTreeTool_FolderExpansionViaPath(t *testing.T) {
 	_ = s.Write("ns", "outside.md", "x")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "tasks/"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.HasPrefix(out, "tasks/") {
 		t.Errorf("expected 'tasks/' header; got:\n%s", out)
@@ -351,7 +351,7 @@ func TestTreeTool_ArchiveHiddenByDefault(t *testing.T) {
 	_ = s.Write("ns", "deleted/gone.md", "# Gone\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "active.md") {
 		t.Errorf("active file should be visible; got:\n%s", out)
@@ -369,7 +369,7 @@ func TestTreeTool_ArchiveVisibleViaExplicitPath(t *testing.T) {
 	_ = s.Write("ns", "archive/old.md", "# Old\n\n## History\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "path": "archive/"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"archive/", "old.md", "## History"} {
 		if !strings.Contains(out, want) {
@@ -384,7 +384,7 @@ func TestTreeTool_ArchiveVisibleViaIncludeFlag(t *testing.T) {
 	_ = s.Write("ns", "archive/old.md", "# Old\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "include_archive": true})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "archive/") {
 		t.Errorf("include_archive=true should surface archive folder; got:\n%s", out)
@@ -400,7 +400,7 @@ func TestTreeTool_ArchiveHiddenAtDepth99WithoutFlag(t *testing.T) {
 	_ = s.Write("ns", "archive/old.md", "# Old\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 99})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if strings.Contains(out, "archive/") || strings.Contains(out, "old.md") {
 		t.Errorf("depth=99 alone should NOT bypass archive exclusion; got:\n%s", out)
@@ -412,7 +412,7 @@ func TestTreeTool_ArchiveAtDepth99WithFlag(t *testing.T) {
 	_ = s.Write("ns", "archive/old.md", "# Old\n\n## History\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 99, "include_archive": true})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"archive/", "old.md", "## History"} {
 		if !strings.Contains(out, want) {
@@ -426,7 +426,7 @@ func TestTreeTool_FolderCountUsesSingular(t *testing.T) {
 	_ = s.Write("ns", "folder/only.md", "x")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	if !strings.Contains(out, "folder/ (1 item)") {
 		t.Errorf("expected singular 'item'; got:\n%s", out)
@@ -440,7 +440,7 @@ func TestTreeTool_EmitsHeadingText(t *testing.T) {
 	_ = s.Write("ns", "doc.md", "# Title\n\n## Phase 7 ⬜ — `log` tool + backend timestamping\n\nbody\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns", "depth": 99})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	want := "## Phase 7 ⬜ — `log` tool + backend timestamping"
 	if !strings.Contains(out, want) {
@@ -457,7 +457,7 @@ func TestTreeTool_HeadingsWithSymbolsRender(t *testing.T) {
 	_ = s.Write("ns", "doc.md", "# Doc\n\n## API: GET /foo\n\nbody\n\n## Edge cases (rare)\n\nbody\n")
 
 	res, _ := runTool(s, "tree", map[string]any{"namespace": "ns"})
-	out := res.(map[string]string)["tree"]
+	out := res.(treeResult).Tree
 
 	for _, want := range []string{"## API: GET /foo", "## Edge cases (rare)"} {
 		if !strings.Contains(out, want) {

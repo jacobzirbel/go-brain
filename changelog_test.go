@@ -52,11 +52,11 @@ func TestEditTool_WithComment_InsertsRow(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "f.md", "alpha beta")
 	_, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "f.md",
-		"old_str": "beta",
-		"new_str": "GAMMA",
-		"comment":    "renamed beta",
+		"namespace": "ns",
+		"filename":  "f.md",
+		"old_str":   "beta",
+		"new_str":   "GAMMA",
+		"comment":   "renamed beta",
 	})
 	if isErr {
 		t.Fatal("edit failed")
@@ -312,12 +312,12 @@ func TestExport_OmitsArchive_IncludesCoalesce(t *testing.T) {
 	_ = s.Write("ns", "deleted/gone.md", "rm'd")
 
 	// Stand up the UI with a real session so the handler accepts the request.
-	store = s
+	srv := newServer(config{}, s)
 	tok := "tok"
 	_ = s.CreateSession(tok)
 
 	mux := http.NewServeMux()
-	registerUIRoutes(mux)
+	srv.registerUIRoutes(mux)
 	req := httptest.NewRequest("GET", "/ui/export/ns.zip", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tok})
 	rr := httptest.NewRecorder()
@@ -356,12 +356,12 @@ func TestExport_ReturnsCoalesceNewOverOld(t *testing.T) {
 	_ = s.Review("ns", "f.md")
 	_ = s.Write("ns", "f.md", "v2-pending")
 
-	store = s
+	srv := newServer(config{}, s)
 	tok := "tok2"
 	_ = s.CreateSession(tok)
 
 	mux := http.NewServeMux()
-	registerUIRoutes(mux)
+	srv.registerUIRoutes(mux)
 	req := httptest.NewRequest("GET", "/ui/export/ns.zip", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tok})
 	rr := httptest.NewRecorder()

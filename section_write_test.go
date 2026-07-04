@@ -47,9 +47,9 @@ func TestAppendToSection_ExistingSection(t *testing.T) {
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "beta" {
-		t.Errorf("returned slug = %q, want %q", m["section"], "beta")
+	m := res.(sectionResult)
+	if m.Section != "beta" {
+		t.Errorf("returned slug = %q, want %q", m.Section, "beta")
 	}
 	got, _, _ := s.Read("ns", "doc.md")
 	if !strings.Contains(got, "## Beta") {
@@ -63,7 +63,7 @@ func TestAppendToSection_ExistingSection(t *testing.T) {
 		t.Error("Alpha section content changed unexpectedly")
 	}
 	// returned content should contain both the heading and the new line
-	content := m["content"].(string)
+	content := m.Content
 	if !strings.HasPrefix(content, "## Beta") {
 		t.Errorf("returned content should start with heading: %q", content)
 	}
@@ -85,14 +85,11 @@ func TestAppendToSection_MissNoCreate(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected error for missing section, got %v", res)
 	}
-	m := res.(map[string]any)
-	if !strings.Contains(m["error"].(string), "not found") {
-		t.Errorf("error should mention not found: %v", m["error"])
+	e := res.(errResult)
+	if !strings.Contains(e.Error, "not found") {
+		t.Errorf("error should mention not found: %v", e.Error)
 	}
-	avail, ok := m["available"].([]string)
-	if !ok {
-		t.Fatalf("expected available list, got %T: %v", m["available"], m["available"])
-	}
+	avail := e.Available
 	if len(avail) == 0 {
 		t.Error("available slugs should be non-empty")
 	}
@@ -117,9 +114,9 @@ func TestAppendToSection_MissWithCreate(t *testing.T) {
 	if isErr {
 		t.Fatalf("expected success with create_if_missing, got %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "gamma" {
-		t.Errorf("returned slug = %q, want %q", m["section"], "gamma")
+	m := res.(sectionResult)
+	if m.Section != "gamma" {
+		t.Errorf("returned slug = %q, want %q", m.Section, "gamma")
 	}
 	got, _, _ := s.Read("ns", "doc.md")
 	if !strings.Contains(got, "## Gamma") {
@@ -132,7 +129,7 @@ func TestAppendToSection_MissWithCreate(t *testing.T) {
 	if !strings.Contains(got, "## Alpha") || !strings.Contains(got, "## Beta") {
 		t.Error("original sections were clobbered")
 	}
-	content := m["content"].(string)
+	content := m.Content
 	if !strings.HasPrefix(content, "## Gamma") {
 		t.Errorf("returned content should start with heading: %q", content)
 	}
@@ -153,14 +150,11 @@ func TestAppendToSection_AmbiguousHeading(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected ambiguity error, got %v", res)
 	}
-	m := res.(map[string]any)
-	if !strings.Contains(m["error"].(string), "ambiguous") {
-		t.Errorf("error should mention ambiguity: %v", m["error"])
+	e := res.(errResult)
+	if !strings.Contains(e.Error, "ambiguous") {
+		t.Errorf("error should mention ambiguity: %v", e.Error)
 	}
-	conflicts, ok := m["conflicts"].([]map[string]string)
-	if !ok {
-		t.Fatalf("expected conflicts list, got %T: %v", m["conflicts"], m["conflicts"])
-	}
+	conflicts := e.Conflicts
 	if len(conflicts) != 2 {
 		t.Errorf("expected 2 conflicts, got %d: %v", len(conflicts), conflicts)
 	}
@@ -199,7 +193,7 @@ func TestAppendToSection_NestedSubsectionBoundary(t *testing.T) {
 			alphaIdx, nestedIdx, addIdx, betaIdx, got)
 	}
 	// returned content should contain the nested sub-section and the new line
-	content := res.(map[string]any)["content"].(string)
+	content := res.(sectionResult).Content
 	if !strings.Contains(content, "### Nested") {
 		t.Errorf("returned section content should include sub-section: %q", content)
 	}
@@ -223,9 +217,9 @@ func TestUpsertSection_ReplacesBody(t *testing.T) {
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "beta" {
-		t.Errorf("returned slug = %q, want %q", m["section"], "beta")
+	m := res.(sectionResult)
+	if m.Section != "beta" {
+		t.Errorf("returned slug = %q, want %q", m.Section, "beta")
 	}
 	got, _, _ := s.Read("ns", "doc.md")
 	if !strings.Contains(got, "## Beta") {
@@ -241,7 +235,7 @@ func TestUpsertSection_ReplacesBody(t *testing.T) {
 	if !strings.Contains(got, "alpha body") {
 		t.Error("Alpha section was clobbered")
 	}
-	content := m["content"].(string)
+	content := m.Content
 	if !strings.HasPrefix(content, "## Beta") {
 		t.Errorf("returned content should start with heading: %q", content)
 	}
@@ -263,9 +257,9 @@ func TestUpsertSection_CreatesSection(t *testing.T) {
 	if isErr {
 		t.Fatalf("expected success, got %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "delta" {
-		t.Errorf("returned slug = %q, want %q", m["section"], "delta")
+	m := res.(sectionResult)
+	if m.Section != "delta" {
+		t.Errorf("returned slug = %q, want %q", m.Section, "delta")
 	}
 	got, _, _ := s.Read("ns", "doc.md")
 	if !strings.Contains(got, "## Delta") {
@@ -278,7 +272,7 @@ func TestUpsertSection_CreatesSection(t *testing.T) {
 	if !strings.Contains(got, "## Alpha") || !strings.Contains(got, "## Beta") {
 		t.Error("original sections were clobbered")
 	}
-	content := m["content"].(string)
+	content := m.Content
 	if !strings.HasPrefix(content, "## Delta") {
 		t.Errorf("returned content should start with heading: %q", content)
 	}
@@ -297,9 +291,9 @@ func TestUpsertSection_AmbiguousHeading(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected ambiguity error, got %v", res)
 	}
-	m := res.(map[string]any)
-	if !strings.Contains(m["error"].(string), "ambiguous") {
-		t.Errorf("error should mention ambiguity: %v", m["error"])
+	e := res.(errResult)
+	if !strings.Contains(e.Error, "ambiguous") {
+		t.Errorf("error should mention ambiguity: %v", e.Error)
 	}
 	// file must be unchanged
 	got, _, _ := s.Read("ns", "doc.md")
@@ -346,7 +340,7 @@ func TestUpsertSection_NestedSubsectionBoundary(t *testing.T) {
 	if alphaIdx >= betaIdx {
 		t.Errorf("Alpha should come before Beta: alpha=%d beta=%d", alphaIdx, betaIdx)
 	}
-	content := res.(map[string]any)["content"].(string)
+	content := res.(sectionResult).Content
 	if !strings.HasPrefix(content, "## Alpha") {
 		t.Errorf("returned content should start with heading: %q", content)
 	}

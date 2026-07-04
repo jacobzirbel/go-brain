@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -42,12 +43,12 @@ type Comment struct {
 }
 
 type SearchOptions struct {
-	Namespace       string
-	Query           string
-	Path            string // optional doublestar glob over filename
-	Limit           int    // hard-capped at 100 by Search
-	Order           string // "bm25" (default) or "recency"
-	IncludeArchive  bool
+	Namespace      string
+	Query          string
+	Path           string // optional doublestar glob over filename
+	Limit          int    // hard-capped at 100 by Search
+	Order          string // "bm25" (default) or "recency"
+	IncludeArchive bool
 }
 
 type SearchHit struct {
@@ -67,37 +68,6 @@ type PendingFile struct {
 	LastCommentSnippet string `json:"last_comment_snippet"`
 	MovedFromNamespace string `json:"moved_from_namespace,omitempty"`
 	MovedFromFilename  string `json:"moved_from_filename,omitempty"`
-}
-
-type Store interface {
-	Read(namespace, filename string) (content, updatedAt string, err error)
-	ReadEntry(namespace, filename string) (content string, newVal sql.NullString, updatedAt string, err error)
-	Write(namespace, filename, content string) error
-	Create(namespace, filename, content string) error
-	ForceWrite(namespace, filename, content string) error
-	Append(namespace, filename, content string) error
-	Delete(namespace, filename string) error
-	Move(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
-	MoveMany(ops []MoveOp) error
-	MoveForReview(ops []MoveOp) error
-	MovedFrom(namespace, filename string) (fromNamespace, fromFilename string, ok bool, err error)
-	Copy(srcNamespace, srcFilename, dstNamespace, dstFilename string) error
-	List(namespace string) ([]FileEntry, error)
-	ListNamespaces() ([]string, error)
-
-	InsertComment(namespace, filename, content string) error
-	ListComments(namespace, filename string, includeReviewed bool, limit, offset int) ([]Comment, error)
-	Review(namespace, filename string) error
-	Reject(namespace, filename string) error
-	PendingFiles() ([]PendingFile, error)
-	GlobalPendingCount() (int, error)
-	NamespacePendingCount(namespace string) (int, error)
-
-	Search(opts SearchOptions) ([]SearchHit, error)
-
-	CreateSession(token string) error
-	HasSession(token string) (bool, error)
-	DeleteSession(token string) error
 }
 
 type SQLiteStore struct {
@@ -966,11 +936,7 @@ func (s *SQLiteStore) PendingFiles() ([]PendingFile, error) {
 	// Sort newest-first by SortAt. Done in Go because the SortAt expression
 	// COALESCE(MAX(comment.created_at), entries.updated_at) is awkward in the
 	// outer ORDER BY when it references subquery aliases.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].SortAt > out[j-1].SortAt; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].SortAt > out[j].SortAt })
 	return out, nil
 }
 

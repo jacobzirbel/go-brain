@@ -4,81 +4,108 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
-
-var dbPath string
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-var (
-	secretKey         string
-	baseURL           string
-	port              string
-	frontendPassword  string
-)
+type config struct {
+	secretKey        string
+	baseURL          string
+	port             string
+	frontendPassword string
+	dbPath           string
+}
 
-func init() {
-	secretKey = os.Getenv("SECRET_KEY")
-	baseURL = os.Getenv("BASE_URL")
-	frontendPassword = os.Getenv("FRONTEND_PASSWORD")
-	port = os.Getenv("PORT")
-	if port == "" {
-		port = "3049"
+func loadConfig() config {
+	cfg := config{
+		secretKey:        os.Getenv("SECRET_KEY"),
+		baseURL:          os.Getenv("BASE_URL"),
+		frontendPassword: os.Getenv("FRONTEND_PASSWORD"),
+		port:             os.Getenv("PORT"),
+		dbPath:           os.Getenv("DB_PATH"),
 	}
-	dbPath = os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "/opt/go-brain/brain.db"
+	if cfg.port == "" {
+		cfg.port = "3049"
 	}
+	if cfg.dbPath == "" {
+		cfg.dbPath = "/opt/go-brain/brain.db"
+	}
+	return cfg
+}
+
+// ── Server ────────────────────────────────────────────────────────────────────
+
+type server struct {
+	cfg    config
+	store  *SQLiteStore
+	tokens tokenStore
+}
+
+func newServer(cfg config, store *SQLiteStore) *server {
+	s := &server{
+		cfg:    cfg,
+		store:  store,
+		tokens: tokenStore{tokens: map[string]struct{}{}},
+	}
+	if cfg.secretKey != "" {
+		s.tokens.add(cfg.secretKey)
+	}
+	return s
 }
 
 // ── Token store ───────────────────────────────────────────────────────────────
 
-var (
-	tokensMu    sync.RWMutex
-	validTokens = map[string]struct{}{}
-)
-
-func addToken(t string) {
-	tokensMu.Lock()
-	validTokens[t] = struct{}{}
-	tokensMu.Unlock()
+type tokenStore struct {
+	mu     sync.RWMutex
+	tokens map[string]struct{}
 }
 
-func hasToken(t string) bool {
-	tokensMu.RLock()
-	_, ok := validTokens[t]
-	tokensMu.RUnlock()
+func (t *tokenStore) add(tok string) {
+	t.mu.Lock()
+	t.tokens[tok] = struct{}{}
+	t.mu.Unlock()
+}
+
+func (t *tokenStore) has(tok string) bool {
+	t.mu.RLock()
+	_, ok := t.tokens[tok]
+	t.mu.RUnlock()
 	return ok
 }
 
-func deleteToken(t string) {
-	tokensMu.Lock()
-	delete(validTokens, t)
-	tokensMu.Unlock()
+func (t *tokenStore) delete(tok string) {
+	t.mu.Lock()
+	delete(t.tokens, tok)
+	t.mu.Unlock()
 }
 
 func randHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand failure means the process can't mint tokens at all
+	}
 	return hex.EncodeToString(b)
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
-func auth(next http.HandlerFunc) http.HandlerFunc {
+func (s *server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(header, "Bearer ")
 		token = strings.TrimSpace(token)
-		if token == "" || !hasToken(token) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		if token == "" || !s.tokens.has(token) {
+			writeJSON(w, http.StatusUnauthorized, errResult{Error: "Unauthorized"})
 			return
 		}
 		next(w, r)
@@ -108,43 +135,68 @@ func logMiddleware(next http.Handler) http.Handler {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("writeJSON: %v", err)
+	}
 }
 
 // ── OAuth endpoints ───────────────────────────────────────────────────────────
 
-func handleMeta(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                            baseURL,
-		"registration_endpoint":             baseURL + "/register",
-		"authorization_endpoint":            baseURL + "/oauth/authorize",
-		"token_endpoint":                    baseURL + "/oauth/token",
-		"response_types_supported":          []string{"code"},
-		"grant_types_supported":             []string{"authorization_code"},
-		"code_challenge_methods_supported":  []string{"S256"},
+type oauthMetadata struct {
+	Issuer                        string   `json:"issuer"`
+	RegistrationEndpoint          string   `json:"registration_endpoint"`
+	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
+	TokenEndpoint                 string   `json:"token_endpoint"`
+	ResponseTypesSupported        []string `json:"response_types_supported"`
+	GrantTypesSupported           []string `json:"grant_types_supported"`
+	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
+}
+
+func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, oauthMetadata{
+		Issuer:                        s.cfg.baseURL,
+		RegistrationEndpoint:          s.cfg.baseURL + "/register",
+		AuthorizationEndpoint:         s.cfg.baseURL + "/oauth/authorize",
+		TokenEndpoint:                 s.cfg.baseURL + "/oauth/token",
+		ResponseTypesSupported:        []string{"code"},
+		GrantTypesSupported:           []string{"authorization_code"},
+		CodeChallengeMethodsSupported: []string{"S256"},
 	})
 }
 
-func handleRegister(w http.ResponseWriter, r *http.Request) {
+type registrationResponse struct {
+	ClientID      string   `json:"client_id"`
+	ClientSecret  string   `json:"client_secret"`
+	RedirectURIs  []string `json:"redirect_uris"`
+	ClientName    string   `json:"client_name"`
+	GrantTypes    []string `json:"grant_types"`
+	ResponseTypes []string `json:"response_types"`
+}
+
+func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RedirectURIs []string `json:"redirect_uris"`
 		ClientName   string   `json:"client_name"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	// An empty body is a valid registration; anything else malformed is not.
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, errResult{Error: "invalid request body"})
+		return
+	}
 	if body.ClientName == "" {
 		body.ClientName = "claude"
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"client_id":     randHex(16),
-		"client_secret": "not-used",
-		"redirect_uris": body.RedirectURIs,
-		"client_name":   body.ClientName,
-		"grant_types":   []string{"authorization_code"},
-		"response_types": []string{"code"},
+	writeJSON(w, http.StatusCreated, registrationResponse{
+		ClientID:      randHex(16),
+		ClientSecret:  "not-used",
+		RedirectURIs:  body.RedirectURIs,
+		ClientName:    body.ClientName,
+		GrantTypes:    []string{"authorization_code"},
+		ResponseTypes: []string{"code"},
 	})
 }
 
-func handleAuthorizeGet(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleAuthorizeGet(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	redirectURI := q.Get("redirect_uri")
 	state := q.Get("state")
@@ -178,15 +230,18 @@ func handleAuthorizeGet(w http.ResponseWriter, r *http.Request) {
 </html>`, redirectURI, state, codeChallenge, codeChallengeMethod)
 }
 
-func handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+func (s *server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
 	secret := r.FormValue("secret")
 	redirectURI := r.FormValue("redirect_uri")
 	state := r.FormValue("state")
 	codeChallenge := r.FormValue("code_challenge")
 	codeChallengeMethod := r.FormValue("code_challenge_method")
 
-	if secret == "" || secret != secretKey {
+	if secret == "" || secret != s.cfg.secretKey {
 		params := url.Values{
 			"redirect_uri":          {redirectURI},
 			"state":                 {state},
@@ -204,7 +259,7 @@ func handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	code := randHex(32)
-	addToken("code:" + code)
+	s.tokens.add("code:" + code)
 
 	redirectURL, err := url.Parse(redirectURI)
 	if err != nil {
@@ -220,8 +275,19 @@ func handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
 }
 
-func handleToken(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
+}
+
+func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
+	// ParseForm only consumes the body for form content-types, so the JSON
+	// fallback below still sees an unread body.
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResult{Error: "invalid_request"})
+		return
+	}
 	grantType := r.FormValue("grant_type")
 	code := r.FormValue("code")
 
@@ -231,33 +297,34 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 			GrantType string `json:"grant_type"`
 			Code      string `json:"code"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, errResult{Error: "invalid_request"})
+			return
+		}
 		grantType = body.GrantType
 		code = body.Code
 	}
 
 	if grantType != "authorization_code" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported_grant_type"})
+		writeJSON(w, http.StatusBadRequest, errResult{Error: "unsupported_grant_type"})
 		return
 	}
 	codeKey := "code:" + code
-	if !hasToken(codeKey) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+	if !s.tokens.has(codeKey) {
+		writeJSON(w, http.StatusBadRequest, errResult{Error: "invalid_grant"})
 		return
 	}
-	deleteToken(codeKey)
+	s.tokens.delete(codeKey)
 	accessToken := randHex(32)
-	addToken(accessToken)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": accessToken,
-		"token_type":   "Bearer",
-		"expires_in":   86400 * 365,
+	s.tokens.add(accessToken)
+	writeJSON(w, http.StatusOK, tokenResponse{
+		AccessToken: accessToken,
+		TokenType:   "Bearer",
+		ExpiresIn:   86400 * 365,
 	})
 }
 
 // ── MCP endpoint ──────────────────────────────────────────────────────────────
-
-var store Store
 
 type rpcRequest struct {
 	JSONRPC string         `json:"jsonrpc"`
@@ -266,79 +333,122 @@ type rpcRequest struct {
 	Params  map[string]any `json:"params"`
 }
 
-func handleMCP(w http.ResponseWriter, r *http.Request) {
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type rpcResponse struct {
+	JSONRPC string    `json:"jsonrpc"`
+	ID      any       `json:"id"`
+	Result  any       `json:"result,omitempty"`
+	Error   *rpcError `json:"error,omitempty"`
+}
+
+type mcpTextContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type mcpToolResult struct {
+	Content []mcpTextContent `json:"content"`
+	IsError bool             `json:"isError"`
+}
+
+type mcpInitializeResult struct {
+	ProtocolVersion string          `json:"protocolVersion"`
+	ServerInfo      mcpServerInfo   `json:"serverInfo"`
+	Capabilities    mcpCapabilities `json:"capabilities"`
+}
+
+type mcpServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type mcpCapabilities struct {
+	Tools struct{} `json:"tools"`
+}
+
+func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"jsonrpc": "2.0",
-			"id":      nil,
-			"error":   map[string]any{"code": -32700, "message": "parse error"},
+		writeJSON(w, http.StatusBadRequest, rpcResponse{
+			JSONRPC: "2.0",
+			Error:   &rpcError{Code: -32700, Message: "parse error"},
 		})
 		return
 	}
 
 	respond := func(result any) {
-		writeJSON(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+		writeJSON(w, http.StatusOK, rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: result})
 	}
-	rpcError := func(code int, message string) {
-		writeJSON(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": code, "message": message}})
+	respondErr := func(code int, message string) {
+		writeJSON(w, http.StatusOK, rpcResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: code, Message: message}})
 	}
 
 	switch req.Method {
 	case "initialize":
-		respond(map[string]any{
-			"protocolVersion": "2024-11-05",
-			"serverInfo":      map[string]any{"name": "go-brain", "version": "0.1.0"},
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+		respond(mcpInitializeResult{
+			ProtocolVersion: "2024-11-05",
+			ServerInfo:      mcpServerInfo{Name: "go-brain", Version: "0.1.0"},
 		})
 	case "tools/list":
-		respond(map[string]any{"tools": mcpTools})
+		respond(struct {
+			Tools []toolDef `json:"tools"`
+		}{Tools: mcpTools})
 	case "tools/call":
 		name, _ := req.Params["name"].(string)
 		args, _ := req.Params["arguments"].(map[string]any)
-		result, isError := runTool(store, name, args)
-		raw, _ := json.Marshal(result)
-		respond(map[string]any{
-			"content": []map[string]any{{"type": "text", "text": string(raw)}},
-			"isError": isError,
+		result, isError := runTool(s.store, name, args)
+		raw, err := json.Marshal(result)
+		if err != nil {
+			respondErr(-32603, "internal error: "+err.Error())
+			return
+		}
+		respond(mcpToolResult{
+			Content: []mcpTextContent{{Type: "text", Text: string(raw)}},
+			IsError: isError,
 		})
 	case "ping":
-		respond(map[string]any{})
+		respond(struct{}{})
 	default:
-		rpcError(-32601, "method not found: "+req.Method)
+		respondErr(-32601, "method not found: "+req.Method)
 	}
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	if secretKey != "" {
-		addToken(secretKey)
-	}
-
-	var err error
-	store, err = NewSQLiteStore(dbPath)
+	cfg := loadConfig()
+	store, err := NewSQLiteStore(cfg.dbPath)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
-	log.Printf("database: %s", dbPath)
+	log.Printf("database: %s", cfg.dbPath)
+	srv := newServer(cfg, store)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /.well-known/oauth-authorization-server", handleMeta)
-	mux.HandleFunc("POST /register", handleRegister)
-	mux.HandleFunc("GET /oauth/authorize", handleAuthorizeGet)
-	mux.HandleFunc("POST /oauth/authorize", handleAuthorizePost)
-	mux.HandleFunc("POST /oauth/token", handleToken)
-	mux.HandleFunc("POST /mcp", auth(handleMCP))
-	mux.HandleFunc("POST /", auth(handleMCP))
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", srv.handleMeta)
+	mux.HandleFunc("POST /register", srv.handleRegister)
+	mux.HandleFunc("GET /oauth/authorize", srv.handleAuthorizeGet)
+	mux.HandleFunc("POST /oauth/authorize", srv.handleAuthorizePost)
+	mux.HandleFunc("POST /oauth/token", srv.handleToken)
+	mux.HandleFunc("POST /mcp", srv.auth(srv.handleMCP))
+	mux.HandleFunc("POST /", srv.auth(srv.handleMCP))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "server": "go-brain"})
 	})
 
-	registerUIRoutes(mux)
+	srv.registerUIRoutes(mux)
 
-	addr := ":" + port
-	log.Printf("go-brain listening on %s", addr)
-	log.Printf("OAuth endpoint: %s/oauth/authorize", baseURL)
-	log.Fatal(http.ListenAndServe(addr, logMiddleware(mux)))
+	httpServer := &http.Server{
+		Addr:              ":" + cfg.port,
+		Handler:           logMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	log.Printf("go-brain listening on %s", httpServer.Addr)
+	log.Printf("OAuth endpoint: %s/oauth/authorize", cfg.baseURL)
+	log.Fatal(httpServer.ListenAndServe())
 }

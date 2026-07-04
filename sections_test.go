@@ -145,11 +145,11 @@ func TestFindSection_Miss(t *testing.T) {
 
 func TestSlugifyHeading(t *testing.T) {
 	cases := map[string]string{
-		"Phase 10 design":      "phase-10-design",
-		"  Trim me  ":          "trim-me",
-		"Punctuation!?":        "punctuation",
-		"snake_and-dash":       "snake-and-dash",
-		"UPPER lower":          "upper-lower",
+		"Phase 10 design": "phase-10-design",
+		"  Trim me  ":     "trim-me",
+		"Punctuation!?":   "punctuation",
+		"snake_and-dash":  "snake-and-dash",
+		"UPPER lower":     "upper-lower",
 	}
 	for in, want := range cases {
 		if got := slugifyHeading(in); got != want {
@@ -190,8 +190,7 @@ func TestReadTool_FullFile(t *testing.T) {
 	if isErr {
 		t.Fatalf("unexpected error: %v", res)
 	}
-	m := res.(map[string]string)
-	if m["content"] != sectionDoc {
+	if res.(readResult).Content != sectionDoc {
 		t.Errorf("full-file content mismatch")
 	}
 }
@@ -207,8 +206,7 @@ func TestReadTool_BySection(t *testing.T) {
 	if isErr {
 		t.Fatalf("unexpected error: %v", res)
 	}
-	m := res.(map[string]any)
-	content := m["content"].(string)
+	content := res.(readResult).Content
 	if !strings.HasPrefix(content, "## Phase 10 design") {
 		t.Errorf("section content should start at heading: %q", content)
 	}
@@ -226,14 +224,14 @@ func TestReadTool_SectionRoundTripsThroughEdit(t *testing.T) {
 		"filename":  "doc.md",
 		"section":   "phase-10-design",
 	})
-	sectionBytes := res.(map[string]any)["content"].(string)
+	sectionBytes := res.(readResult).Content
 
 	newSection := strings.Replace(sectionBytes, "resolved.", "resolved & shipped.", 1)
 	_, isErr := runTool(s, "edit", map[string]any{
-		"namespace":  "ns",
-		"filename":   "doc.md",
-		"old_str": sectionBytes,
-		"new_str": newSection,
+		"namespace": "ns",
+		"filename":  "doc.md",
+		"old_str":   sectionBytes,
+		"new_str":   newSection,
 	})
 	if isErr {
 		t.Fatalf("section bytes did not round-trip through edit: %v", res)
@@ -258,11 +256,7 @@ func TestReadTool_SectionMissReturnsAvailable(t *testing.T) {
 	if !isErr {
 		t.Fatalf("expected miss to error; got %v", res)
 	}
-	m := res.(map[string]any)
-	avail, ok := m["available"].([]string)
-	if !ok {
-		t.Fatalf("expected available list, got %v (type %T)", m["available"], m["available"])
-	}
+	avail := res.(errResult).Available
 	if len(avail) != 3 {
 		t.Errorf("expected 3 available slugs, got %d: %v", len(avail), avail)
 	}
@@ -279,9 +273,8 @@ func TestReadTool_SectionByHeadingText(t *testing.T) {
 	if isErr {
 		t.Fatalf("heading-text fallback failed: %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "phase-10-design" {
-		t.Errorf("expected canonical slug returned, got %q", m["section"])
+	if got := res.(readResult).Section; got != "phase-10-design" {
+		t.Errorf("expected canonical slug returned, got %q", got)
 	}
 }
 
@@ -308,12 +301,12 @@ func TestParseSections_TrimsTrailingDashesFromSlug(t *testing.T) {
 func TestSlugifyHeading_NormalizesTrailingDashes(t *testing.T) {
 	// Heading-text fallback must match the normalized stored slug.
 	cases := map[string]string{
-		"Phase 0 ✅":     "phase-0",
-		"Phase 1 ❌":     "phase-1",
-		"-leading":       "leading",
-		"trailing-":      "trailing",
-		"-both-":         "both",
-		"-- double --":   "double",
+		"Phase 0 ✅":    "phase-0",
+		"Phase 1 ❌":    "phase-1",
+		"-leading":     "leading",
+		"trailing-":    "trailing",
+		"-both-":       "both",
+		"-- double --": "double",
 	}
 	for in, want := range cases {
 		if got := slugifyHeading(in); got != want {
@@ -336,9 +329,8 @@ func TestReadTool_LegacySlugWithTrailingDash(t *testing.T) {
 	if isErr {
 		t.Fatalf("legacy slug with trailing dash should resolve; got %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "phase-0" {
-		t.Errorf("expected canonical slug 'phase-0' returned, got %q", m["section"])
+	if got := res.(readResult).Section; got != "phase-0" {
+		t.Errorf("expected canonical slug 'phase-0' returned, got %q", got)
 	}
 }
 
@@ -354,8 +346,7 @@ func TestReadTool_HeadingTextWithEmojiResolves(t *testing.T) {
 	if isErr {
 		t.Fatalf("emoji heading text should resolve; got %v", res)
 	}
-	m := res.(map[string]any)
-	if m["section"].(string) != "phase-0" {
-		t.Errorf("expected canonical slug 'phase-0' returned, got %q", m["section"])
+	if got := res.(readResult).Section; got != "phase-0" {
+		t.Errorf("expected canonical slug 'phase-0' returned, got %q", got)
 	}
 }
