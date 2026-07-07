@@ -278,6 +278,7 @@ type namespaceGroup struct {
 	Tree         *treeNode
 	TotalSize    int
 	PendingCount int
+	Tags         []string
 }
 
 func (s *server) handleUIHome(w http.ResponseWriter, r *http.Request) {
@@ -296,17 +297,23 @@ func (s *server) handleUIHome(w http.ResponseWriter, r *http.Request) {
 		}
 		tree := buildTree(files)
 		grandTotal += tree.Size
+		tags, err := s.store.TagsFor(ns)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		groups = append(groups, namespaceGroup{
 			Namespace:    ns,
 			Tree:         tree,
 			TotalSize:    tree.Size,
 			PendingCount: tree.Pending,
+			Tags:         tags,
 		})
 	}
-	// Pin `global` to the top regardless of alphabetical order; everything
+	// Pin `global` to the bottom regardless of alphabetical order; everything
 	// else stays in the order ListNamespaces returned (alphabetical).
 	sort.SliceStable(groups, func(i, j int) bool {
-		return groups[i].Namespace == "global" && groups[j].Namespace != "global"
+		return groups[j].Namespace == "global" && groups[i].Namespace != "global"
 	})
 	renderUI(w, "home", map[string]any{
 		"Groups":     groups,
@@ -896,8 +903,6 @@ const uiCSS = `
   .theme-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 10px; min-height: 0; border-radius: 6px; font-size: 14px; cursor: pointer; line-height: 1; }
   @media (hover: hover) { .theme-toggle:hover { background: var(--bg-panel); color: var(--text); } }
   .ns { background: var(--bg-panel); padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid var(--border); }
-  .ns-picker { display: flex; gap: 10px; align-items: center; margin: 0 0 14px; font-size: 13px; color: var(--text-muted); }
-  .ns-picker select { background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px 10px; font-size: 14px; font-family: inherit; }
   .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ns ul { list-style: none; margin: 0; padding: 0; }
   .ns li { padding: 10px 0; border-top: 1px solid var(--border-soft); line-height: 1.4; }
@@ -949,6 +954,14 @@ const uiCSS = `
   .tag-filter { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
   .tag-filter button { background: var(--bg-code); border: 1px solid var(--border-strong); border-radius: 999px; padding: 3px 11px; font-size: 12px; min-height: 0; cursor: pointer; color: var(--text); }
   .tag-filter button.active { background: var(--btn-success); border-color: var(--btn-success); color: #fff; }
+  .mini-tag { display: inline-block; background: var(--bg-code); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: normal; color: var(--text-soft); margin-left: 4px; }
+  .ns-picker { margin: 4px 0 18px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); }
+  .ns-search { width: 100%; padding: 8px 12px; font-size: 14px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 8px; font-family: inherit; background: var(--bg); color: var(--text); }
+  .ns-list { list-style: none; padding: 0; margin: 10px 0 0; max-height: 340px; overflow-y: auto; }
+  .ns-entry button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 8px; padding: 7px 10px; font-size: 14px; min-height: 0; cursor: pointer; color: var(--text); }
+  .ns-entry button:hover { background: var(--bg-code); }
+  .ns-entry.selected button { background: var(--bg-code); font-weight: 600; }
+  .ns-entry .entry-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
   .review-banner { position: sticky; top: 0; z-index: 5; background: var(--banner-bg); border: 1px solid var(--banner-border); color: var(--banner-text); padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .review-banner strong { flex: 1 1 auto; }
   .review-banner form { display: inline; }
@@ -1065,13 +1078,15 @@ const uiTemplateSrc = `
 {{if not .Groups}}<p class="meta">No files yet. <a href="/ui/new">Create one.</a></p>{{end}}
 {{if .Groups}}<p class="meta">≈ {{tokens .GrandTotal}} tokens total</p>{{end}}
 
-{{/* Render every namespace; JS below shows global (always) + one other from localStorage. */}}
+{{/* Render every namespace; JS below shows the picker-selected one + global
+     (always, pinned last). global sorts to the bottom in handleUIHome. */}}
 {{range .Groups}}
-<div class="ns" data-ns="{{.Namespace}}">
+<div class="ns" data-ns="{{.Namespace}}" data-tags="{{range .Tags}}{{.}} {{end}}">
   <h3>
     {{.Namespace}}
     {{if .PendingCount}}<span class="pending-dot" title="{{.PendingCount}} pending">●</span>{{end}}
     <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span>
+    {{range .Tags}}<span class="mini-tag">{{.}}</span>{{end}}
     <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a>
     <a href="/ui/export/{{.Namespace}}.zip" style="font-size:12px;margin-left:4px">↓ download</a>
     <a href="/ui/export/{{.Namespace}}.zip?include_archive=1" style="font-size:12px;margin-left:4px">↓ +archive</a>
@@ -1081,8 +1096,9 @@ const uiTemplateSrc = `
 {{end}}
 
 <div class="ns-picker" id="ns-picker" style="display:none">
-  <label for="ns-select">Other namespace:</label>
-  <select id="ns-select"></select>
+  <input type="text" id="ns-search" class="ns-search" placeholder="Search namespaces…" autocomplete="off" />
+  <div class="tag-filter" id="ns-tag-filter"></div>
+  <ul class="ns-list" id="ns-list"></ul>
 </div>
 
 <script>
@@ -1090,52 +1106,85 @@ const uiTemplateSrc = `
   var panels = Array.from(document.querySelectorAll('.ns'));
   if (!panels.length) return;
   var picker = document.getElementById('ns-picker');
-  var select = document.getElementById('ns-select');
+  var search = document.getElementById('ns-search');
+  var tagBar = document.getElementById('ns-tag-filter');
+  var list = document.getElementById('ns-list');
 
-  var globalPanel = null;
   var others = [];
   panels.forEach(function (p) {
     var name = p.getAttribute('data-ns');
-    if (name === 'global') globalPanel = p;
-    else others.push({ name: name, el: p });
+    var tags = (p.getAttribute('data-tags') || '').trim().split(/\s+/).filter(Boolean);
+    if (name !== 'global') others.push({ name: name, el: p, tags: tags });
   });
 
-  // Hide every non-global panel by default; reveal one based on selection.
+  // Non-global panels are hidden until picked; global always shows (pinned last).
   others.forEach(function (o) { o.el.style.display = 'none'; });
-
   if (others.length === 0) return;  // only global exists — no picker needed
 
-  // Insert picker right before the first non-global panel (or at the end if global is last).
-  var anchor = globalPanel ? globalPanel.nextSibling : panels[0];
-  if (anchor) anchor.parentNode.insertBefore(picker, anchor);
-  else document.body.appendChild(picker);
+  // Picker sits above all panels.
+  panels[0].parentNode.insertBefore(picker, panels[0]);
   picker.style.display = '';
 
-  // Populate dropdown.
-  others.forEach(function (o) {
-    var opt = document.createElement('option');
-    opt.value = o.name;
-    opt.textContent = o.name;
-    select.appendChild(opt);
+  var entries = others.map(function (o) {
+    var li = document.createElement('li');
+    li.className = 'ns-entry';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    var label = document.createElement('span');
+    label.textContent = o.name;
+    btn.appendChild(label);
+    if (o.tags.length) {
+      var wrap = document.createElement('span');
+      wrap.className = 'entry-tags';
+      o.tags.forEach(function (t) {
+        var c = document.createElement('span');
+        c.className = 'mini-tag';
+        c.textContent = t;
+        wrap.appendChild(c);
+      });
+      btn.appendChild(wrap);
+    }
+    btn.addEventListener('click', function () { select(o.name); });
+    li.appendChild(btn);
+    list.appendChild(li);
+    return { o: o, li: li };
   });
 
-  var stored = localStorage.getItem('gb-ns');
-  var initial = stored && others.some(function (o) { return o.name === stored; })
-    ? stored
-    : others[0].name;
-  select.value = initial;
-  show(initial);
-
-  select.addEventListener('change', function () {
-    localStorage.setItem('gb-ns', select.value);
-    show(select.value);
+  var allTags = {};
+  others.forEach(function (o) { o.tags.forEach(function (t) { allTags[t] = true; }); });
+  var activeTag = null;
+  Object.keys(allTags).sort().forEach(function (t) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = t;
+    b.dataset.tag = t;
+    b.addEventListener('click', function () {
+      activeTag = (activeTag === t) ? null : t;
+      Array.from(tagBar.children).forEach(function (x) { x.classList.toggle('active', x.dataset.tag === activeTag); });
+      applyFilter();
+    });
+    tagBar.appendChild(b);
   });
 
-  function show(name) {
-    others.forEach(function (o) {
-      o.el.style.display = (o.name === name) ? '' : 'none';
+  function applyFilter() {
+    var q = search.value.trim().toLowerCase();
+    entries.forEach(function (e) {
+      var matchName = !q || e.o.name.toLowerCase().indexOf(q) >= 0;
+      var matchTag = !activeTag || e.o.tags.indexOf(activeTag) >= 0;
+      e.li.style.display = (matchName && matchTag) ? '' : 'none';
     });
   }
+  search.addEventListener('input', applyFilter);
+
+  function select(name) {
+    others.forEach(function (o) { o.el.style.display = (o.name === name) ? '' : 'none'; });
+    entries.forEach(function (e) { e.li.classList.toggle('selected', e.o.name === name); });
+    localStorage.setItem('gb-ns', name);
+  }
+
+  var stored = localStorage.getItem('gb-ns');
+  var initial = (stored && others.some(function (o) { return o.name === stored; })) ? stored : others[0].name;
+  select(initial);
 })();
 </script>
 ` + chromeEnd + `{{end}}

@@ -823,6 +823,25 @@ func (s *SQLiteStore) NamespaceRecords() ([]NamespaceRecord, error) {
 	return out, rows.Err()
 }
 
+// TagsFor returns a namespace's tags, name-sorted. Empty (not an error) for an
+// untagged or unknown namespace.
+func (s *SQLiteStore) TagsFor(namespace string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT tag FROM namespace_tags WHERE namespace = ? ORDER BY tag`, namespace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		out = append(out, tag)
+	}
+	return out, rows.Err()
+}
+
 // AddNamespaceTag attaches a tag to a namespace. Idempotent — re-tagging is a
 // no-op. Tags are UI-only, open-vocabulary labels; the caller trims/validates.
 func (s *SQLiteStore) AddNamespaceTag(namespace, tag string) error {
