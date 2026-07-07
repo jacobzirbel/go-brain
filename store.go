@@ -777,23 +777,69 @@ func (s *SQLiteStore) listNamespaces(includeClosed bool) ([]string, error) {
 	return out, rows.Err()
 }
 
-// ListClosedNamespaces returns just the closed namespaces — the UI's "reopen"
-// section reads this.
-func (s *SQLiteStore) ListClosedNamespaces() ([]string, error) {
-	rows, err := s.db.Query(`SELECT name FROM namespaces WHERE closed = 1 ORDER BY name`)
+// NamespaceRecord is a namespace as the management tab sees it: its lifecycle
+// bit plus its tags.
+type NamespaceRecord struct {
+	Name   string
+	Closed bool
+	Tags   []string
+}
+
+// NamespaceRecords returns every namespace (closed included) with its tags,
+// name-sorted. Two queries stitched in Go — cheaper than a per-row tag fetch and
+// there are few enough namespaces that a join+group buys nothing.
+func (s *SQLiteStore) NamespaceRecords() ([]NamespaceRecord, error) {
+	tagsByNS := map[string][]string{}
+	tagRows, err := s.db.Query(`SELECT namespace, tag FROM namespace_tags ORDER BY tag`)
+	if err != nil {
+		return nil, err
+	}
+	defer tagRows.Close()
+	for tagRows.Next() {
+		var ns, tag string
+		if err := tagRows.Scan(&ns, &tag); err != nil {
+			return nil, err
+		}
+		tagsByNS[ns] = append(tagsByNS[ns], tag)
+	}
+	if err := tagRows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(`SELECT name, closed FROM namespaces ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []string{}
+	out := []NamespaceRecord{}
 	for rows.Next() {
-		var ns string
-		if err := rows.Scan(&ns); err != nil {
+		var rec NamespaceRecord
+		if err := rows.Scan(&rec.Name, &rec.Closed); err != nil {
 			return nil, err
 		}
-		out = append(out, ns)
+		rec.Tags = tagsByNS[rec.Name]
+		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+// AddNamespaceTag attaches a tag to a namespace. Idempotent — re-tagging is a
+// no-op. Tags are UI-only, open-vocabulary labels; the caller trims/validates.
+func (s *SQLiteStore) AddNamespaceTag(namespace, tag string) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO namespace_tags(namespace, tag) VALUES (?, ?)`,
+		namespace, tag,
+	)
+	return err
+}
+
+// RemoveNamespaceTag detaches a tag. A tag that isn't present is a silent no-op.
+func (s *SQLiteStore) RemoveNamespaceTag(namespace, tag string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM namespace_tags WHERE namespace = ? AND tag = ?`,
+		namespace, tag,
+	)
+	return err
 }
 
 // IsNamespaceClosed reports whether a namespace exists and is closed. A

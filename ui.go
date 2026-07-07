@@ -308,16 +308,8 @@ func (s *server) handleUIHome(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(groups, func(i, j int) bool {
 		return groups[i].Namespace == "global" && groups[j].Namespace != "global"
 	})
-	// Closed namespaces are excluded from the panels above (ListNamespaces skips
-	// them); surface them only in the collapsed reopen section.
-	closed, err := s.store.ListClosedNamespaces()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	renderUI(w, "home", map[string]any{
 		"Groups":     groups,
-		"Closed":     closed,
 		"GrandTotal": grandTotal,
 		"Chrome":     s.chrome(),
 	})
@@ -449,10 +441,22 @@ func (s *server) handleUIArchive(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
-// handleUINamespaceClose / handleUINamespaceReopen flip a namespace's closed
-// bit. Closing retires a whole namespace from every default surface (MCP list,
-// boot, search, this picker) without deleting it; reopen is the lossless
-// reverse. UI-only by design — there is no MCP equivalent.
+// The namespaces management tab owns a namespace's lifecycle: its closed bit and
+// its tags. All of it is UI-only — there is no MCP equivalent for closing or
+// tagging. Every action here redirects back to the tab.
+
+func (s *server) handleUINamespaces(w http.ResponseWriter, r *http.Request) {
+	records, err := s.store.NamespaceRecords()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	renderUI(w, "namespaces", map[string]any{
+		"Records": records,
+		"Chrome":  s.chrome(),
+	})
+}
+
 func (s *server) handleUINamespaceClose(w http.ResponseWriter, r *http.Request) {
 	s.setNamespaceClosed(w, r, true)
 }
@@ -467,7 +471,33 @@ func (s *server) setNamespaceClosed(w http.ResponseWriter, r *http.Request, clos
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/ui/", http.StatusFound)
+	http.Redirect(w, r, "/ui/namespaces", http.StatusFound)
+}
+
+func (s *server) handleUINamespaceTagAdd(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	ns := r.URL.Query().Get("ns")
+	tag := strings.TrimSpace(r.FormValue("tag"))
+	if tag != "" {
+		if err := s.store.AddNamespaceTag(ns, tag); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	http.Redirect(w, r, "/ui/namespaces", http.StatusFound)
+}
+
+func (s *server) handleUINamespaceTagRemove(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	tag := r.URL.Query().Get("tag")
+	if err := s.store.RemoveNamespaceTag(ns, tag); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/ui/namespaces", http.StatusFound)
 }
 
 func (s *server) handleUIDelete(w http.ResponseWriter, r *http.Request) {
@@ -778,8 +808,11 @@ func (s *server) registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/edit", s.uiAuth(s.handleUIEditGet))
 	mux.HandleFunc("POST /ui/edit", s.uiAuth(s.handleUIEditPost))
 	mux.HandleFunc("POST /ui/archive", s.uiAuth(s.handleUIArchive))
+	mux.HandleFunc("GET /ui/namespaces", s.uiAuth(s.handleUINamespaces))
 	mux.HandleFunc("POST /ui/ns-close", s.uiAuth(s.handleUINamespaceClose))
 	mux.HandleFunc("POST /ui/ns-reopen", s.uiAuth(s.handleUINamespaceReopen))
+	mux.HandleFunc("POST /ui/ns-tag-add", s.uiAuth(s.handleUINamespaceTagAdd))
+	mux.HandleFunc("POST /ui/ns-tag-remove", s.uiAuth(s.handleUINamespaceTagRemove))
 	mux.HandleFunc("POST /ui/delete", s.uiAuth(s.handleUIDelete))
 	mux.HandleFunc("POST /ui/hard-delete", s.uiAuth(s.handleUIHardDelete))
 	mux.HandleFunc("GET /ui/new", s.uiAuth(s.handleUINewGet))
@@ -907,6 +940,15 @@ const uiCSS = `
   .approve:active { opacity: 0.65; }
   .pending-dot { color: var(--pending); font-size: 14px; line-height: 1; }
   .pending-tag { color: var(--pending); font-size: 12px; font-weight: 600; }
+  .ns-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+  .ns-row .ns-name { font-weight: 600; min-width: 150px; }
+  .ns-row.closed .ns-name { color: var(--text-soft); text-decoration: line-through; }
+  .tag-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--bg-code); border: 1px solid var(--border); border-radius: 999px; padding: 2px 4px 2px 9px; font-size: 12px; }
+  .tag-chip form { display: inline; }
+  .tag-chip button { background: transparent; border: 0; padding: 0; min-height: 0; line-height: 1; font-size: 12px; color: var(--text-soft); cursor: pointer; }
+  .tag-filter { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+  .tag-filter button { background: var(--bg-code); border: 1px solid var(--border-strong); border-radius: 999px; padding: 3px 11px; font-size: 12px; min-height: 0; cursor: pointer; color: var(--text); }
+  .tag-filter button.active { background: var(--btn-success); border-color: var(--btn-success); color: #fff; }
   .review-banner { position: sticky; top: 0; z-index: 5; background: var(--banner-bg); border: 1px solid var(--banner-border); color: var(--banner-text); padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .review-banner strong { flex: 1 1 auto; }
   .review-banner form { display: inline; }
@@ -995,6 +1037,7 @@ const uiTemplateSrc = `
   <h1><a href="/ui/">go-brain</a></h1>
   <nav>
     <a class="inbox" href="/ui/inbox">Inbox{{if .InboxCount}} <span class="pending-tag">({{.InboxCount}})</span>{{end}}</a>
+    <a href="/ui/namespaces">Namespaces</a>
     <a href="/ui/new">+ New</a>
     <button id="theme-toggle" type="button" class="theme-toggle" aria-label="Toggle theme" onclick="window.gbToggleTheme()">☾</button>
     <a href="/ui/logout">Logout</a>
@@ -1032,28 +1075,8 @@ const uiTemplateSrc = `
     <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a>
     <a href="/ui/export/{{.Namespace}}.zip" style="font-size:12px;margin-left:4px">↓ download</a>
     <a href="/ui/export/{{.Namespace}}.zip?include_archive=1" style="font-size:12px;margin-left:4px">↓ +archive</a>
-    <form class="inline" method="POST" action="/ui/ns-close?ns={{.Namespace | urlquery}}" style="margin-left:4px"
-          onsubmit="return confirm('Close {{.Namespace}}? It will be hidden from boot, search, and the namespace list until reopened here.')">
-      <button type="submit" style="font-size:12px">✕ close</button>
-    </form>
   </h3>
   {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
-</div>
-{{end}}
-
-{{if .Closed}}
-{{/* Deliberately NOT class "ns" — the picker JS rotates .ns panels by data-ns;
-     this section has none and must stay always-visible at the bottom. */}}
-<div class="closed-ns" style="margin-top:20px;padding-top:10px;border-top:1px solid var(--border)">
-  <h3 class="meta" style="text-transform:none;letter-spacing:normal">Closed namespaces</h3>
-  {{range .Closed}}
-  <div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-    <span>{{.}}</span>
-    <form class="inline" method="POST" action="/ui/ns-reopen?ns={{. | urlquery}}">
-      <button type="submit" style="font-size:12px">↑ reopen</button>
-    </form>
-  </div>
-  {{end}}
 </div>
 {{end}}
 
@@ -1318,6 +1341,66 @@ const uiTemplateSrc = `
 </form>
 {{end}}
 {{end}}
+
+{{define "namespaces"}}` + chromeStart + `
+<h2>Namespaces</h2>
+<p class="meta">Close a namespace to retire it from boot, search, and the namespace list without deleting it — reopen anytime. Tags are UI-only labels for organizing. Filter by tag below.</p>
+
+<div class="tag-filter" id="tag-filter"></div>
+
+<div id="ns-list">
+{{range .Records}}
+  {{$ns := .Name}}
+  <div class="ns-row{{if .Closed}} closed{{end}}" data-tags="{{range .Tags}}{{.}} {{end}}">
+    <span class="ns-name">{{$ns}}</span>
+    {{if .Closed}}<span class="pending-tag" style="color:var(--text-soft)">closed</span>{{end}}
+    {{range .Tags}}
+    <span class="tag-chip">{{.}}
+      <form method="POST" action="/ui/ns-tag-remove?ns={{$ns | urlquery}}&tag={{. | urlquery}}"><button type="submit" title="remove tag">✕</button></form>
+    </span>
+    {{end}}
+    <form class="inline" method="POST" action="/ui/ns-tag-add?ns={{$ns | urlquery}}">
+      <input type="text" name="tag" placeholder="+ tag" style="width:88px;padding:4px 8px;font-size:12px" />
+    </form>
+    <span style="margin-left:auto">
+    {{if .Closed}}
+      <form class="inline" method="POST" action="/ui/ns-reopen?ns={{$ns | urlquery}}"><button type="submit" style="font-size:12px">↑ reopen</button></form>
+    {{else}}
+      <form class="inline" method="POST" action="/ui/ns-close?ns={{$ns | urlquery}}"
+            onsubmit="return confirm('Close {{$ns}}? Hidden from boot, search, and the namespace list until reopened.')"><button type="submit" style="font-size:12px">✕ close</button></form>
+    {{end}}
+    </span>
+  </div>
+{{end}}
+</div>
+
+<script>
+(function () {
+  var rows = Array.from(document.querySelectorAll('.ns-row'));
+  var bar = document.getElementById('tag-filter');
+  var seen = {};
+  rows.forEach(function (r) {
+    (r.getAttribute('data-tags') || '').trim().split(/\s+/).forEach(function (t) { if (t) seen[t] = true; });
+  });
+  var tags = Object.keys(seen).sort();
+  if (!tags.length) return;
+  var active = null;
+  function apply() {
+    rows.forEach(function (r) {
+      var rt = (r.getAttribute('data-tags') || '').trim().split(/\s+/);
+      r.style.display = (!active || rt.indexOf(active) >= 0) ? '' : 'none';
+    });
+    Array.from(bar.children).forEach(function (b) { b.classList.toggle('active', b.dataset.tag === active); });
+  }
+  tags.forEach(function (t) {
+    var b = document.createElement('button');
+    b.textContent = t; b.dataset.tag = t;
+    b.onclick = function () { active = (active === t) ? null : t; apply(); };
+    bar.appendChild(b);
+  });
+})();
+</script>
+` + chromeEnd + `{{end}}
 
 {{define "inbox"}}` + chromeStart + `
 <h2>Inbox{{if .Total}} <span class="meta" style="font-size:15px">({{.Total}})</span>{{end}}</h2>
