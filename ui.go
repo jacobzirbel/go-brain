@@ -956,6 +956,11 @@ const uiCSS = `
   .tag-filter button.active { background: var(--btn-success); border-color: var(--btn-success); color: #fff; }
   .mini-tag { display: inline-block; background: var(--bg-code); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: normal; color: var(--text-soft); margin-left: 4px; }
   .ns-picker { margin: 4px 0 18px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); }
+  .ns-picker summary { cursor: pointer; font-size: 14px; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+  .ns-picker summary::-webkit-details-marker { display: none; }
+  .ns-picker summary::before { content: '▸'; font-size: 11px; color: var(--text-soft); }
+  .ns-picker[open] summary::before { content: '▾'; }
+  .ns-picker-body { margin-top: 12px; }
   .ns-search { width: 100%; padding: 8px 12px; font-size: 14px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 8px; font-family: inherit; background: var(--bg); color: var(--text); }
   .ns-list { list-style: none; padding: 0; margin: 10px 0 0; max-height: 340px; overflow-y: auto; }
   .ns-entry button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 8px; padding: 7px 10px; font-size: 14px; min-height: 0; cursor: pointer; color: var(--text); }
@@ -1095,11 +1100,14 @@ const uiTemplateSrc = `
 </div>
 {{end}}
 
-<div class="ns-picker" id="ns-picker" style="display:none">
-  <input type="text" id="ns-search" class="ns-search" placeholder="Search namespaces…" autocomplete="off" />
-  <div class="tag-filter" id="ns-tag-filter"></div>
-  <ul class="ns-list" id="ns-list"></ul>
-</div>
+<details class="ns-picker" id="ns-picker" style="display:none">
+  <summary><span>Switch namespace</span><span id="ns-current" class="meta" style="font-weight:normal;text-transform:none;letter-spacing:normal"></span></summary>
+  <div class="ns-picker-body">
+    <input type="text" id="ns-search" class="ns-search" placeholder="Search namespaces…" autocomplete="off" />
+    <div class="tag-filter" id="ns-tag-filter"></div>
+    <ul class="ns-list" id="ns-list"></ul>
+  </div>
+</details>
 
 <script>
 (function () {
@@ -1109,6 +1117,7 @@ const uiTemplateSrc = `
   var search = document.getElementById('ns-search');
   var tagBar = document.getElementById('ns-tag-filter');
   var list = document.getElementById('ns-list');
+  var current = document.getElementById('ns-current');
 
   var others = [];
   panels.forEach(function (p) {
@@ -1121,9 +1130,13 @@ const uiTemplateSrc = `
   others.forEach(function (o) { o.el.style.display = 'none'; });
   if (others.length === 0) return;  // only global exists — no picker needed
 
-  // Picker sits above all panels.
+  // Picker sits above all panels. Collapsed by default; open state persisted.
   panels[0].parentNode.insertBefore(picker, panels[0]);
   picker.style.display = '';
+  picker.open = localStorage.getItem('gb-ns-picker-open') === '1';
+  picker.addEventListener('toggle', function () {
+    localStorage.setItem('gb-ns-picker-open', picker.open ? '1' : '0');
+  });
 
   var entries = others.map(function (o) {
     var li = document.createElement('li');
@@ -1179,6 +1192,7 @@ const uiTemplateSrc = `
   function select(name) {
     others.forEach(function (o) { o.el.style.display = (o.name === name) ? '' : 'none'; });
     entries.forEach(function (e) { e.li.classList.toggle('selected', e.o.name === name); });
+    if (current) current.textContent = '— ' + name;
     localStorage.setItem('gb-ns', name);
   }
 
