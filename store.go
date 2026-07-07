@@ -49,6 +49,7 @@ type SearchOptions struct {
 	Limit          int    // hard-capped at 100 by Search
 	Order          string // "bm25" (default) or "recency"
 	IncludeArchive bool
+	IncludeClosed  bool // include hits from closed namespaces (default: excluded)
 }
 
 type SearchHit struct {
@@ -741,8 +742,26 @@ func (s *SQLiteStore) Delete(namespace, filename string) error {
 	return tx.Commit()
 }
 
+// ListNamespaces returns the active (not closed) namespaces. This is the default
+// discovery surface: boot, read-miss suggestions, and the `namespaces` tool all
+// use it, so a closed namespace is invisible unless a caller opts into
+// ListNamespacesIncludingClosed.
 func (s *SQLiteStore) ListNamespaces() ([]string, error) {
-	rows, err := s.db.Query(`SELECT name FROM namespaces ORDER BY name`)
+	return s.listNamespaces(false)
+}
+
+// ListNamespacesIncludingClosed returns every registered namespace, closed or
+// not — the include_closed access path.
+func (s *SQLiteStore) ListNamespacesIncludingClosed() ([]string, error) {
+	return s.listNamespaces(true)
+}
+
+func (s *SQLiteStore) listNamespaces(includeClosed bool) ([]string, error) {
+	q := `SELECT name FROM namespaces WHERE closed = 0 ORDER BY name`
+	if includeClosed {
+		q = `SELECT name FROM namespaces ORDER BY name`
+	}
+	rows, err := s.db.Query(q)
 	if err != nil {
 		return nil, err
 	}
@@ -756,6 +775,39 @@ func (s *SQLiteStore) ListNamespaces() ([]string, error) {
 		out = append(out, ns)
 	}
 	return out, rows.Err()
+}
+
+// IsNamespaceClosed reports whether a namespace exists and is closed. A
+// nonexistent namespace returns false — the caller's own not-found path handles
+// that; this only gates the closed case.
+func (s *SQLiteStore) IsNamespaceClosed(name string) (bool, error) {
+	var closed bool
+	err := s.db.QueryRow(`SELECT closed FROM namespaces WHERE name = ?`, name).Scan(&closed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return closed, nil
+}
+
+// SetNamespaceClosed flips a namespace's closed bit. Lossless and reversible —
+// the archive/reopen toggle, driven only from the UI. Errors with ErrNotFound if
+// the namespace has no registry row.
+func (s *SQLiteStore) SetNamespaceClosed(name string, closed bool) error {
+	res, err := s.db.Exec(`UPDATE namespaces SET closed = ? WHERE name = ?`, closed, name)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) List(namespace string) ([]FileEntry, error) {
@@ -1035,6 +1087,10 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 	if opts.IncludeArchive {
 		includeArchive = 1
 	}
+	includeClosed := 0
+	if opts.IncludeClosed {
+		includeClosed = 1
+	}
 	crossNS := opts.Namespace == "" || opts.Namespace == "*"
 	nsClause := `AND entries_fts.namespace = ?`
 	if crossNS {
@@ -1058,6 +1114,9 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 			AND e.filename NOT GLOB 'archived/*'
 		  ))
 		  AND e.filename NOT GLOB 'deleted/*'
+		  AND (? = 1 OR entries_fts.namespace NOT IN (
+			SELECT name FROM namespaces WHERE closed = 1
+		  ))
 		ORDER BY ` + orderClause + `
 		LIMIT ?`
 
@@ -1073,7 +1132,7 @@ func (s *SQLiteStore) Search(opts SearchOptions) ([]SearchHit, error) {
 	if !crossNS {
 		queryArgs = append(queryArgs, opts.Namespace)
 	}
-	queryArgs = append(queryArgs, includeArchive, rowBudget)
+	queryArgs = append(queryArgs, includeArchive, includeClosed, rowBudget)
 	rows, err := s.db.Query(q, queryArgs...)
 	if err != nil {
 		return nil, err

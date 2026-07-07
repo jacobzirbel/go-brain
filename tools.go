@@ -115,7 +115,7 @@ var mcpTools = []toolDef{
 	},
 	{
 		Name:        "namespaces",
-		Description: "List all namespaces that contain at least one file.",
+		Description: "List the active namespaces.",
 		InputSchema: inputSchema{
 			Type:       "object",
 			Properties: map[string]property{},
@@ -469,6 +469,25 @@ func runTool(store *SQLiteStore, name string, args map[string]any) (result any, 
 	if entry.needsContent && a.str("content") == "" {
 		return errResult{Error: "missing required argument: content"}, true
 	}
+	// A closed namespace is unreachable by name from every namespace-taking tool:
+	// it errors exactly like a nonexistent one, so a dead namespace can't be
+	// loaded just because its name was mentioned. The UI is the on-purpose access
+	// path. Discovery tools (namespaces, search) aren't needsNS and gate closed
+	// namespaces themselves via include_closed.
+	if entry.needsNS {
+		ns := a.ns("namespace")
+		closed, err := store.IsNamespaceClosed(ns)
+		if err != nil {
+			return errResult{Error: err.Error()}, true
+		}
+		if closed {
+			nsList, err := store.ListNamespaces()
+			if err != nil {
+				return errResult{Error: err.Error()}, true
+			}
+			return namespaceMissError(ns, nsList), true
+		}
+	}
 	result, isError = entry.run(store, a)
 	if !isError && entry.autoComment {
 		if c := a.str("comment"); c != "" {
@@ -613,7 +632,13 @@ func toolReject(s *SQLiteStore, a toolArgs) (any, bool) {
 }
 
 func toolNamespaces(s *SQLiteStore, a toolArgs) (any, bool) {
-	nsList, err := s.ListNamespaces()
+	// include_closed is intentionally unadvertised — the default surface always
+	// excludes closed namespaces; the flag only fires when JZ explicitly asks.
+	list := s.ListNamespaces
+	if a.boolean("include_closed") {
+		list = s.ListNamespacesIncludingClosed
+	}
+	nsList, err := list()
 	if err != nil {
 		return errResult{Error: err.Error()}, true
 	}
@@ -775,6 +800,7 @@ func toolSearch(s *SQLiteStore, a toolArgs) (any, bool) {
 		Limit:          a.integer("limit", 20),
 		Order:          a.str("order"),
 		IncludeArchive: a.boolean("include_archive"),
+		IncludeClosed:  a.boolean("include_closed"), // unadvertised; JZ-only
 	})
 	if err != nil {
 		return errResult{Error: err.Error()}, true
