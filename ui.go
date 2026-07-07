@@ -308,8 +308,16 @@ func (s *server) handleUIHome(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(groups, func(i, j int) bool {
 		return groups[i].Namespace == "global" && groups[j].Namespace != "global"
 	})
+	// Closed namespaces are excluded from the panels above (ListNamespaces skips
+	// them); surface them only in the collapsed reopen section.
+	closed, err := s.store.ListClosedNamespaces()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	renderUI(w, "home", map[string]any{
 		"Groups":     groups,
+		"Closed":     closed,
 		"GrandTotal": grandTotal,
 		"Chrome":     s.chrome(),
 	})
@@ -435,6 +443,27 @@ func (s *server) handleUIArchive(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	dst := "archived/" + name
 	if err := s.store.Move(ns, name, ns, dst); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDestinationExists) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
+// handleUINamespaceClose / handleUINamespaceReopen flip a namespace's closed
+// bit. Closing retires a whole namespace from every default surface (MCP list,
+// boot, search, this picker) without deleting it; reopen is the lossless
+// reverse. UI-only by design — there is no MCP equivalent.
+func (s *server) handleUINamespaceClose(w http.ResponseWriter, r *http.Request) {
+	s.setNamespaceClosed(w, r, true)
+}
+
+func (s *server) handleUINamespaceReopen(w http.ResponseWriter, r *http.Request) {
+	s.setNamespaceClosed(w, r, false)
+}
+
+func (s *server) setNamespaceClosed(w http.ResponseWriter, r *http.Request, closed bool) {
+	ns := r.URL.Query().Get("ns")
+	if err := s.store.SetNamespaceClosed(ns, closed); err != nil && !errors.Is(err, ErrNotFound) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -749,6 +778,8 @@ func (s *server) registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/edit", s.uiAuth(s.handleUIEditGet))
 	mux.HandleFunc("POST /ui/edit", s.uiAuth(s.handleUIEditPost))
 	mux.HandleFunc("POST /ui/archive", s.uiAuth(s.handleUIArchive))
+	mux.HandleFunc("POST /ui/ns-close", s.uiAuth(s.handleUINamespaceClose))
+	mux.HandleFunc("POST /ui/ns-reopen", s.uiAuth(s.handleUINamespaceReopen))
 	mux.HandleFunc("POST /ui/delete", s.uiAuth(s.handleUIDelete))
 	mux.HandleFunc("POST /ui/hard-delete", s.uiAuth(s.handleUIHardDelete))
 	mux.HandleFunc("GET /ui/new", s.uiAuth(s.handleUINewGet))
@@ -1001,8 +1032,28 @@ const uiTemplateSrc = `
     <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a>
     <a href="/ui/export/{{.Namespace}}.zip" style="font-size:12px;margin-left:4px">↓ download</a>
     <a href="/ui/export/{{.Namespace}}.zip?include_archive=1" style="font-size:12px;margin-left:4px">↓ +archive</a>
+    <form class="inline" method="POST" action="/ui/ns-close?ns={{.Namespace | urlquery}}" style="margin-left:4px"
+          onsubmit="return confirm('Close {{.Namespace}}? It will be hidden from boot, search, and the namespace list until reopened here.')">
+      <button type="submit" style="font-size:12px">✕ close</button>
+    </form>
   </h3>
   {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
+</div>
+{{end}}
+
+{{if .Closed}}
+{{/* Deliberately NOT class "ns" — the picker JS rotates .ns panels by data-ns;
+     this section has none and must stay always-visible at the bottom. */}}
+<div class="closed-ns" style="margin-top:20px;padding-top:10px;border-top:1px solid var(--border)">
+  <h3 class="meta" style="text-transform:none;letter-spacing:normal">Closed namespaces</h3>
+  {{range .Closed}}
+  <div style="display:flex;align-items:center;gap:6px;padding:2px 0">
+    <span>{{.}}</span>
+    <form class="inline" method="POST" action="/ui/ns-reopen?ns={{. | urlquery}}">
+      <button type="submit" style="font-size:12px">↑ reopen</button>
+    </form>
+  </div>
+  {{end}}
 </div>
 {{end}}
 

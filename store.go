@@ -777,6 +777,25 @@ func (s *SQLiteStore) listNamespaces(includeClosed bool) ([]string, error) {
 	return out, rows.Err()
 }
 
+// ListClosedNamespaces returns just the closed namespaces — the UI's "reopen"
+// section reads this.
+func (s *SQLiteStore) ListClosedNamespaces() ([]string, error) {
+	rows, err := s.db.Query(`SELECT name FROM namespaces WHERE closed = 1 ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
 // IsNamespaceClosed reports whether a namespace exists and is closed. A
 // nonexistent namespace returns false — the caller's own not-found path handles
 // that; this only gates the closed case.
