@@ -123,6 +123,30 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	)`); err != nil {
 		return nil, err
 	}
+	// Namespace registry. Before this, namespaces were implicit — the DISTINCT
+	// namespaces present in `entries`. Materializing them as rows gives `closed`
+	// (namespace-level, distinct from the file-level archived/ prefix) and tags
+	// somewhere to live, and lets an emptied namespace persist. Both feature
+	// surfaces are created up front so neither needs a later migration:
+	//   - closed: excludes a namespace from listing/boot/tools until reopened (UI).
+	//   - namespace_tags: many-to-many labels, UI-only, inert until the tags phase.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS namespaces (
+		name       TEXT PRIMARY KEY,
+		closed     BOOLEAN NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS namespace_tags (
+		namespace TEXT NOT NULL,
+		tag       TEXT NOT NULL,
+		PRIMARY KEY (namespace, tag)
+	)`); err != nil {
+		return nil, err
+	}
+	if err := syncNamespaces(db); err != nil {
+		return nil, err
+	}
 	// Phase 8: FTS5 search index over entries.
 	// namespace UNINDEXED — exists only for WHERE filtering, so a search for
 	// the namespace name doesn't pollute results. basename = path.Base(filename).
@@ -205,6 +229,24 @@ func upsertFTS(tx execer, rowid int64, namespace, filename, body string) error {
 
 func deleteFTS(tx execer, rowid int64) error {
 	_, err := tx.Exec(`DELETE FROM entries_fts WHERE rowid = ?`, rowid)
+	return err
+}
+
+// syncNamespaces heals the registry from the source of truth on every boot:
+// any namespace present in `entries` but missing a registry row gets one.
+// Idempotent (INSERT OR IGNORE) and self-healing — it recovers a hand-edited DB
+// and covers namespaces that predate the registry. It never deletes rows, so an
+// emptied namespace keeps its registry row (and its closed/tags state).
+func syncNamespaces(db *sql.DB) error {
+	_, err := db.Exec(`INSERT OR IGNORE INTO namespaces(name)
+		SELECT DISTINCT namespace FROM entries`)
+	return err
+}
+
+// upsertNamespace registers a namespace at the moment a write path can mint one.
+// Idempotent — a no-op once the row exists, so it's safe to call on every write.
+func upsertNamespace(tx execer, name string) error {
+	_, err := tx.Exec(`INSERT OR IGNORE INTO namespaces(name) VALUES (?)`, name)
 	return err
 }
 
@@ -372,6 +414,9 @@ func (s *SQLiteStore) Write(namespace, filename, content string) error {
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
+	if err := upsertNamespace(tx, namespace); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -405,6 +450,9 @@ func (s *SQLiteStore) Create(namespace, filename, content string) error {
 		return err
 	}
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	if err := upsertNamespace(tx, namespace); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -468,6 +516,9 @@ func (s *SQLiteStore) Append(namespace, filename, content string) error {
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
+	if err := upsertNamespace(tx, namespace); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -516,6 +567,10 @@ func moveInTx(tx *sql.Tx, op MoveOp) error {
 	}
 	// FTS namespace/basename may have changed; body is unchanged.
 	if err := upsertFTS(tx, rowid, op.DstNamespace, op.DstFilename, body); err != nil {
+		return err
+	}
+	// A move into a not-yet-seen namespace mints it.
+	if err := upsertNamespace(tx, op.DstNamespace); err != nil {
 		return err
 	}
 	return nil
@@ -654,6 +709,9 @@ func (s *SQLiteStore) Copy(srcNS, srcName, dstNS, dstName string) error {
 	if err := upsertFTS(tx, newRowid, dstNS, dstName, body); err != nil {
 		return err
 	}
+	if err := upsertNamespace(tx, dstNS); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -684,7 +742,7 @@ func (s *SQLiteStore) Delete(namespace, filename string) error {
 }
 
 func (s *SQLiteStore) ListNamespaces() ([]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT namespace FROM entries ORDER BY namespace`)
+	rows, err := s.db.Query(`SELECT name FROM namespaces ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
