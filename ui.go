@@ -903,6 +903,11 @@ const uiCSS = `
   .theme-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 10px; min-height: 0; border-radius: 6px; font-size: 14px; cursor: pointer; line-height: 1; }
   @media (hover: hover) { .theme-toggle:hover { background: var(--bg-panel); color: var(--text); } }
   .ns { background: var(--bg-panel); padding: 14px 16px; border-radius: 10px; margin-bottom: 14px; border: 1px solid var(--border); }
+  .ns > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; }
+  .ns > summary::-webkit-details-marker { display: none; }
+  .ns > summary::before { content: '▾'; font-size: 11px; color: var(--text-soft); margin-right: 8px; align-self: center; }
+  .ns:not([open]) > summary::before { content: '▸'; }
+  .ns > summary h3 { margin: 0; }
   .ns h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ns ul { list-style: none; margin: 0; padding: 0; }
   .ns li { padding: 10px 0; border-top: 1px solid var(--border-soft); line-height: 1.4; }
@@ -1086,18 +1091,20 @@ const uiTemplateSrc = `
 {{/* Render every namespace; JS below shows the picker-selected one + global
      (always, pinned last). global sorts to the bottom in handleUIHome. */}}
 {{range .Groups}}
-<div class="ns" data-ns="{{.Namespace}}" data-tags="{{range .Tags}}{{.}} {{end}}">
-  <h3>
-    {{.Namespace}}
-    {{if .PendingCount}}<span class="pending-dot" title="{{.PendingCount}} pending">●</span>{{end}}
-    <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span>
-    {{range .Tags}}<span class="mini-tag">{{.}}</span>{{end}}
-    <a href="/ui/new?ns={{.Namespace}}" style="font-size:12px;margin-left:8px">+ new</a>
-    <a href="/ui/export/{{.Namespace}}.zip" style="font-size:12px;margin-left:4px">↓ download</a>
-    <a href="/ui/export/{{.Namespace}}.zip?include_archive=1" style="font-size:12px;margin-left:4px">↓ +archive</a>
-  </h3>
+<details class="ns" open data-ns="{{.Namespace}}" data-tags="{{range .Tags}}{{.}} {{end}}">
+  <summary>
+    <h3>
+      {{.Namespace}}
+      {{if .PendingCount}}<span class="pending-dot" title="{{.PendingCount}} pending">●</span>{{end}}
+      <span class="meta" style="text-transform:none;letter-spacing:normal;font-weight:normal">≈ {{tokens .TotalSize}} tokens</span>
+      {{range .Tags}}<span class="mini-tag">{{.}}</span>{{end}}
+      <a href="/ui/new?ns={{.Namespace}}" onclick="event.stopPropagation()" style="font-size:12px;margin-left:8px">+ new</a>
+      <a href="/ui/export/{{.Namespace}}.zip" onclick="event.stopPropagation()" style="font-size:12px;margin-left:4px">↓ download</a>
+      <a href="/ui/export/{{.Namespace}}.zip?include_archive=1" onclick="event.stopPropagation()" style="font-size:12px;margin-left:4px">↓ +archive</a>
+    </h3>
+  </summary>
   {{template "treeChildren" (nodeCtx .Namespace .Tree)}}
-</div>
+</details>
 {{end}}
 
 <details class="ns-picker" id="ns-picker" style="display:none">
