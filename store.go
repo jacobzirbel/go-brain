@@ -163,6 +163,9 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err := backfillFTSIfEmpty(db); err != nil {
 		return nil, err
 	}
+	if err := createRevisionsSchema(db); err != nil {
+		return nil, err
+	}
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -391,8 +394,13 @@ func normalizeLineEndings(s string) string {
 }
 
 // Write sets entries.new = content. Leaves the canonical `content` untouched.
-// Wrapped in a tx so the FTS index stays in lock-step with entries.
+// Wrapped in a tx so the FTS index and history stay in lock-step with entries.
 func (s *SQLiteStore) Write(namespace, filename, content string) error {
+	return s.writeOp(namespace, filename, content, RevWrite)
+}
+
+// writeOp is Write with the revision op it records — restore shares the path.
+func (s *SQLiteStore) writeOp(namespace, filename, content, op string) error {
 	content = normalizeLineEndings(content)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -413,6 +421,9 @@ func (s *SQLiteStore) Write(namespace, filename, content string) error {
 		return err
 	}
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	if err := recordRevision(tx, namespace, filename, op, body, "", ""); err != nil {
 		return err
 	}
 	if err := upsertNamespace(tx, namespace); err != nil {
@@ -453,6 +464,9 @@ func (s *SQLiteStore) Create(namespace, filename, content string) error {
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
+	if err := recordRevision(tx, namespace, filename, RevCreate, body, "", ""); err != nil {
+		return err
+	}
 	if err := upsertNamespace(tx, namespace); err != nil {
 		return err
 	}
@@ -486,6 +500,9 @@ func (s *SQLiteStore) ForceWrite(namespace, filename, content string) error {
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
+	if err := recordRevision(tx, namespace, filename, RevWrite, body, "", ""); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -515,6 +532,9 @@ func (s *SQLiteStore) Append(namespace, filename, content string) error {
 		return err
 	}
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
+		return err
+	}
+	if err := recordRevision(tx, namespace, filename, RevAppend, body, "", ""); err != nil {
 		return err
 	}
 	if err := upsertNamespace(tx, namespace); err != nil {
@@ -568,6 +588,13 @@ func moveInTx(tx *sql.Tx, op MoveOp) error {
 	}
 	// FTS namespace/basename may have changed; body is unchanged.
 	if err := upsertFTS(tx, rowid, op.DstNamespace, op.DstFilename, body); err != nil {
+		return err
+	}
+	// History follows the file too, then records the move itself.
+	if err := moveRevisions(tx, op.SrcNamespace, op.SrcFilename, op.DstNamespace, op.DstFilename); err != nil {
+		return err
+	}
+	if err := recordRevision(tx, op.DstNamespace, op.DstFilename, RevMove, body, op.SrcNamespace, op.SrcFilename); err != nil {
 		return err
 	}
 	// A move into a not-yet-seen namespace mints it.
@@ -710,6 +737,9 @@ func (s *SQLiteStore) Copy(srcNS, srcName, dstNS, dstName string) error {
 	if err := upsertFTS(tx, newRowid, dstNS, dstName, body); err != nil {
 		return err
 	}
+	if err := recordRevision(tx, dstNS, dstName, RevCopy, body, srcNS, srcName); err != nil {
+		return err
+	}
 	if err := upsertNamespace(tx, dstNS); err != nil {
 		return err
 	}
@@ -737,6 +767,11 @@ func (s *SQLiteStore) Delete(namespace, filename string) error {
 		return err
 	}
 	if err := deleteFTS(tx, rowid); err != nil {
+		return err
+	}
+	// Delete is the hard, permanent erase — history goes with it. Soft deletes
+	// are moves into deleted/ and keep theirs.
+	if err := purgeRevisions(tx, namespace, filename); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1017,6 +1052,9 @@ func (s *SQLiteStore) Review(namespace, filename string) error {
 	if err := upsertFTS(tx, rowid, namespace, filename, body); err != nil {
 		return err
 	}
+	if err := recordRevision(tx, namespace, filename, RevReview, body, "", ""); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -1077,6 +1115,9 @@ func (s *SQLiteStore) Reject(namespace, filename string) error {
 		`UPDATE comments SET reviewed=1 WHERE namespace=? AND filename=? AND reviewed=0`,
 		finalNS, finalName,
 	); err != nil {
+		return err
+	}
+	if err := recordRevision(tx, finalNS, finalName, RevReject, body, "", ""); err != nil {
 		return err
 	}
 	return tx.Commit()

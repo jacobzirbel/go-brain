@@ -830,6 +830,9 @@ func (s *server) registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/comments", s.uiAuth(s.handleUIComments))
 	mux.HandleFunc("GET /ui/inbox", s.uiAuth(s.handleUIInbox))
 	mux.HandleFunc("GET /ui/export/", s.uiAuth(s.handleUIExport))
+	mux.HandleFunc("GET /ui/history", s.uiAuth(s.handleUIHistory))
+	mux.HandleFunc("GET /ui/revision", s.uiAuth(s.handleUIRevision))
+	mux.HandleFunc("POST /ui/restore", s.uiAuth(s.handleUIRestore))
 }
 
 const uiCSS = `
@@ -975,6 +978,9 @@ const uiCSS = `
   .review-banner { position: sticky; top: 0; z-index: 5; background: var(--banner-bg); border: 1px solid var(--banner-border); color: var(--banner-text); padding: 12px 14px; border-radius: 8px; margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .review-banner strong { flex: 1 1 auto; }
   .review-banner form { display: inline; }
+  table.history { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.history th, table.history td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
+  table.history th { background: var(--th-bg); font-weight: 600; color: var(--text-muted); }
   .review-banner button { padding: 8px 14px; font-size: 14px; min-height: 0; }
   .diff-toolbar { display: flex; gap: 16px; align-items: center; margin: 8px 0 4px; font-size: 13px; color: var(--text-soft); }
   .diff-toolbar label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -1232,7 +1238,7 @@ const uiTemplateSrc = `
 
 {{define "file"}}` + chromeStart + `
 <p class="meta"><a href="/ui/">← all</a> / {{.Namespace}} / <strong>{{.Filename}}</strong>{{if or .HasPending .HasMovedFrom}} <span class="pending-dot">●</span>{{end}}</p>
-<p class="meta">Updated {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens</p>
+<p class="meta">Updated {{.UpdatedAt}} · ≈ {{tokens .Size}} tokens · <a href="/ui/history?ns={{.Namespace | urlquery}}&name={{.Filename | urlquery}}">History</a></p>
 
 {{if .HasMovedFrom}}
 <div class="review-banner">
