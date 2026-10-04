@@ -540,7 +540,7 @@ func (s *server) handleUINewPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	ns := strings.TrimSpace(r.FormValue("namespace"))
+	ns := uiNamespace(r.FormValue("namespace"))
 	name := strings.TrimSpace(r.FormValue("filename"))
 	content := r.FormValue("content")
 	comment := strings.TrimSpace(r.FormValue("comment"))
@@ -824,6 +824,8 @@ func (s *server) registerUIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/hard-delete", s.uiAuth(s.handleUIHardDelete))
 	mux.HandleFunc("GET /ui/new", s.uiAuth(s.handleUINewGet))
 	mux.HandleFunc("POST /ui/new", s.uiAuth(s.handleUINewPost))
+	mux.HandleFunc("POST /ui/upload/check", s.uiAuth(s.handleUIUploadCheck))
+	mux.HandleFunc("POST /ui/upload", s.uiAuth(s.handleUIUpload))
 	mux.HandleFunc("POST /ui/review", s.uiAuth(s.handleUIReview))
 	mux.HandleFunc("POST /ui/review-folder", s.uiAuth(s.handleUIReviewFolder))
 	mux.HandleFunc("POST /ui/reject", s.uiAuth(s.handleUIReject))
@@ -1203,9 +1205,26 @@ const uiTemplateSrc = `
     localStorage.setItem('gb-ns', name);
   }
 
+  // ?ns= (e.g. after an upload) wins over the remembered namespace; ?open=
+  // scrolls to that top-level folder in it.
+  var params = new URLSearchParams(location.search);
+  var has = function (n) { return n && others.some(function (o) { return o.name === n; }); };
   var stored = localStorage.getItem('gb-ns');
-  var initial = (stored && others.some(function (o) { return o.name === stored; })) ? stored : others[0].name;
+  var initial = has(params.get('ns')) ? params.get('ns') : has(stored) ? stored : others[0].name;
   select(initial);
+
+  var openFolder = params.get('open');
+  if (openFolder) {
+    var panel = document.querySelector('.ns[data-ns="' + CSS.escape(params.get('ns') || '') + '"]');
+    var folders = panel ? panel.querySelectorAll(':scope > ul.tree > li > details') : [];
+    Array.from(folders).forEach(function (d) {
+      var label = d.querySelector('summary .folder');
+      if (label && label.textContent === openFolder + '/') {
+        d.open = true;
+        d.scrollIntoView({ block: 'start' });
+      }
+    });
+  }
 })();
 </script>
 ` + chromeEnd + `{{end}}
@@ -1572,5 +1591,153 @@ const uiTemplateSrc = `
     <a class="btn btn-secondary" href="/ui/">Cancel</a>
   </div>
 </form>
+
+<h2>Upload folder</h2>
+<p class="meta">Every .md file lands at its relative path, folder name included. Nothing is overwritten — any clash blocks the whole upload.</p>
+<form id="upload-form">
+  <div class="field">
+    <label>Namespace</label>
+    <input type="text" id="up-ns" value="{{.Namespace}}" required />
+  </div>
+  <div class="field" id="up-drop" style="border:2px dashed var(--border-strong);border-radius:8px;padding:16px;text-align:center">
+    <p class="meta" style="margin:0 0 8px">Drop a folder or .md files here, or pick:</p>
+    <input type="file" id="up-dir" webkitdirectory multiple />
+    <input type="file" id="up-files" accept=".md" multiple />
+  </div>
+  <div id="up-summary" class="meta"></div>
+  <div class="field">
+    <label>Comment (optional)</label>
+    <textarea id="up-comment" rows="2" style="min-height:60px" placeholder="Why this upload?"></textarea>
+  </div>
+  <label class="field-inline">
+    <input type="checkbox" id="up-reviewed" value="1" />
+    I've already reviewed these
+  </label>
+  <div class="actions">
+    <button type="submit" id="up-submit" disabled>Upload</button>
+  </div>
+</form>
+<script>
+(function () {
+  var nsInput = document.getElementById('up-ns');
+  var summary = document.getElementById('up-summary');
+  var submit = document.getElementById('up-submit');
+  var md = [];  // [{path, file}]
+
+  function el(tag, text) { var e = document.createElement(tag); if (text != null) e.textContent = text; return e; }
+
+  // Dot-paths (.DS_Store, .obsidian/, .git/) are skipped silently. Other
+  // non-.md files are confirmed and skipped — never read, never sent.
+  function take(items) {
+    md = [];
+    var skipped = [];
+    items.forEach(function (it) {
+      var p = it.path.replace(/^\/+/, '');
+      if (p.split('/').some(function (s) { return s.charAt(0) === '.'; })) return;
+      if (!/\.md$/i.test(p)) { skipped.push(p); return; }
+      md.push({ path: p, file: it.file });
+    });
+    if (skipped.length && !confirm('These non-markdown files will be skipped:\n\n' + skipped.join('\n'))) {
+      md = [];
+      render(null);
+      return;
+    }
+    check();
+  }
+
+  function check() {
+    submit.disabled = true;
+    if (!md.length) { render(null); return; }
+    if (!nsInput.value.trim()) { summary.textContent = 'Enter a namespace.'; return; }
+    summary.textContent = 'Checking…';
+    fetch('/ui/upload/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        namespace: nsInput.value,
+        files: md.map(function (m) { return { path: m.path, size: m.file.size }; })
+      })
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
+      return r.json();
+    }).then(render, function (e) { summary.textContent = 'Check failed: ' + e.message; });
+  }
+
+  function render(plan) {
+    summary.innerHTML = '';
+    submit.disabled = !(plan && plan.ok);
+    if (!plan) { if (!md.length) summary.textContent = 'No markdown files selected.'; return; }
+    summary.appendChild(el('p', plan.create + ' file' + (plan.create === 1 ? '' : 's') + ' to create' +
+      (plan.new_namespace ? ' in a new namespace "' + nsInput.value.trim().toLowerCase() + '"' : '') + '.'));
+    function list(title, rows) {
+      if (!rows.length) return;
+      summary.appendChild(el('strong', title));
+      var ul = el('ul');
+      rows.forEach(function (r) { ul.appendChild(el('li', r)); });
+      summary.appendChild(ul);
+    }
+    list('Already exist:', plan.conflicts.map(function (c) { return c.path + (c.path === c.existing ? '' : ' (as ' + c.existing + ')'); }));
+    list('Same name twice:', plan.duplicates.map(function (g) { return g.join(', '); }));
+    list('Over 1 MB:', plan.oversized);
+    list('Not allowed:', plan.invalid);
+  }
+
+  // Drag-and-drop: walk directory entries so dropped folders keep their paths.
+  function walk(entry, prefix, out) {
+    return new Promise(function (resolve) {
+      if (entry.isFile) {
+        entry.file(function (f) { out.push({ path: prefix + entry.name, file: f }); resolve(); }, resolve);
+        return;
+      }
+      var reader = entry.createReader();
+      var all = [];
+      (function next() {
+        reader.readEntries(function (batch) {
+          if (!batch.length) {
+            Promise.all(all.map(function (e) { return walk(e, prefix + entry.name + '/', out); })).then(resolve);
+            return;
+          }
+          all = all.concat(Array.from(batch));
+          next();
+        }, resolve);
+      })();
+    });
+  }
+
+  var drop = document.getElementById('up-drop');
+  drop.addEventListener('dragover', function (e) { e.preventDefault(); });
+  drop.addEventListener('drop', function (e) {
+    e.preventDefault();
+    var out = [];
+    var entries = Array.from(e.dataTransfer.items)
+      .map(function (i) { return i.webkitGetAsEntry && i.webkitGetAsEntry(); })
+      .filter(Boolean);
+    Promise.all(entries.map(function (en) { return walk(en, '', out); })).then(function () { take(out); });
+  });
+  document.getElementById('up-dir').addEventListener('change', function (e) {
+    take(Array.from(e.target.files).map(function (f) { return { path: f.webkitRelativePath || f.name, file: f }; }));
+  });
+  document.getElementById('up-files').addEventListener('change', function (e) {
+    take(Array.from(e.target.files).map(function (f) { return { path: f.name, file: f }; }));
+  });
+  nsInput.addEventListener('change', check);
+
+  document.getElementById('upload-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var fd = new FormData();
+    fd.append('namespace', nsInput.value);
+    fd.append('comment', document.getElementById('up-comment').value);
+    if (document.getElementById('up-reviewed').checked) fd.append('already_reviewed', '1');
+    md.forEach(function (m) { fd.append('path', m.path); fd.append('file', m.file, m.path); });
+    submit.disabled = true;
+    summary.textContent = 'Uploading…';
+    fetch('/ui/upload', { method: 'POST', body: fd }).then(function (r) {
+      if (r.status === 409) return r.json().then(render);
+      if (!r.ok) return r.text().then(function (t) { summary.textContent = 'Upload failed: ' + t; });
+      location.href = r.url;
+    }, function (err) { summary.textContent = 'Upload failed: ' + err.message; });
+  });
+})();
+</script>
 ` + chromeEnd + `{{end}}
 `
