@@ -3,10 +3,13 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -286,6 +289,18 @@ func (s *server) handleUIHome(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// A closed namespace stays off the home page unless asked for by name —
+	// e.g. landing here after uploading into it.
+	if want := uiNamespace(r.URL.Query().Get("ns")); want != "" && !slices.Contains(namespaces, want) {
+		closed, err := s.store.IsNamespaceClosed(want)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if closed {
+			namespaces = append(namespaces, want)
+		}
 	}
 	groups := make([]namespaceGroup, 0, len(namespaces))
 	grandTotal := 0
@@ -1628,8 +1643,11 @@ const uiTemplateSrc = `
 
   // Dot-paths (.DS_Store, .obsidian/, .git/) are skipped silently. Other
   // non-.md files are confirmed and skipped — never read, never sent.
-  function take(items) {
+  function take(items, unreadable) {
     md = [];
+    if (unreadable && unreadable.length) {
+      alert('These could not be read and will be left out:\n\n' + unreadable.join('\n'));
+    }
     var skipped = [];
     items.forEach(function (it) {
       var p = it.path.replace(/^\/+/, '');
@@ -1645,7 +1663,11 @@ const uiTemplateSrc = `
     check();
   }
 
+  // Each check bumps seq; replies to an older drop or namespace are ignored so
+  // a slow response can't enable Upload with a stale summary.
+  var seq = 0;
   function check() {
+    var mine = ++seq;
     submit.disabled = true;
     if (!md.length) { render(null); return; }
     if (!nsInput.value.trim()) { summary.textContent = 'Enter a namespace.'; return; }
@@ -1660,7 +1682,8 @@ const uiTemplateSrc = `
     }).then(function (r) {
       if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
       return r.json();
-    }).then(render, function (e) { summary.textContent = 'Check failed: ' + e.message; });
+    }).then(function (plan) { if (mine === seq) render(plan); },
+            function (e) { if (mine === seq) summary.textContent = 'Check failed: ' + e.message; });
   }
 
   function render(plan) {
@@ -1683,10 +1706,11 @@ const uiTemplateSrc = `
   }
 
   // Drag-and-drop: walk directory entries so dropped folders keep their paths.
-  function walk(entry, prefix, out) {
+  function walk(entry, prefix, out, failed) {
     return new Promise(function (resolve) {
+      var fail = function () { failed.push(prefix + entry.name); resolve(); };
       if (entry.isFile) {
-        entry.file(function (f) { out.push({ path: prefix + entry.name, file: f }); resolve(); }, resolve);
+        entry.file(function (f) { out.push({ path: prefix + entry.name, file: f }); resolve(); }, fail);
         return;
       }
       var reader = entry.createReader();
@@ -1694,12 +1718,12 @@ const uiTemplateSrc = `
       (function next() {
         reader.readEntries(function (batch) {
           if (!batch.length) {
-            Promise.all(all.map(function (e) { return walk(e, prefix + entry.name + '/', out); })).then(resolve);
+            Promise.all(all.map(function (e) { return walk(e, prefix + entry.name + '/', out, failed); })).then(resolve);
             return;
           }
           all = all.concat(Array.from(batch));
           next();
-        }, resolve);
+        }, fail);
       })();
     });
   }
@@ -1708,11 +1732,11 @@ const uiTemplateSrc = `
   drop.addEventListener('dragover', function (e) { e.preventDefault(); });
   drop.addEventListener('drop', function (e) {
     e.preventDefault();
-    var out = [];
+    var out = [], failed = [];
     var entries = Array.from(e.dataTransfer.items)
       .map(function (i) { return i.webkitGetAsEntry && i.webkitGetAsEntry(); })
       .filter(Boolean);
-    Promise.all(entries.map(function (en) { return walk(en, '', out); })).then(function () { take(out); });
+    Promise.all(entries.map(function (en) { return walk(en, '', out, failed); })).then(function () { take(out, failed); });
   });
   document.getElementById('up-dir').addEventListener('change', function (e) {
     take(Array.from(e.target.files).map(function (f) { return { path: f.webkitRelativePath || f.name, file: f }; }));
@@ -1741,3 +1765,108 @@ const uiTemplateSrc = `
 </script>
 ` + chromeEnd + `{{end}}
 `
+
+// uiNamespace normalizes a UI namespace field (upload and manual entry).
+// Namespace names are case-insensitive, so fold to lowercase as the MCP tools do.
+func uiNamespace(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+type uploadCheckResponse struct {
+	OK bool `json:"ok"`
+	UploadPlan
+}
+
+// handleUIUploadCheck takes {namespace, files: [{path, size}]} — paths only, no
+// contents — and returns the plan.
+func (s *server) handleUIUploadCheck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Namespace string           `json:"namespace"`
+		Files     []UploadFileSpec `json:"files"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxUploadCheckBytes)).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	ns := uiNamespace(req.Namespace)
+	if ns == "" {
+		http.Error(w, "namespace is required", http.StatusBadRequest)
+		return
+	}
+	plan, err := s.store.PlanUpload(ns, req.Files)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, uploadCheckResponse{OK: plan.OK(), UploadPlan: plan})
+}
+
+// handleUIUpload takes a multipart form: namespace, comment, already_reviewed,
+// and parallel `path` values / `file` parts. Blocked batches get 409 with the
+// plan as JSON; success redirects to the namespace's tree at the uploaded
+// root folder.
+func (s *server) handleUIUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(uploadFormMemoryBytes); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	ns := uiNamespace(r.FormValue("namespace"))
+	comment := strings.TrimSpace(r.FormValue("comment"))
+	reviewed := r.FormValue("already_reviewed") == "1"
+	paths := r.MultipartForm.Value["path"]
+	parts := r.MultipartForm.File["file"]
+	if ns == "" || len(paths) == 0 || len(paths) != len(parts) {
+		http.Error(w, "namespace and matching path/file pairs are required", http.StatusBadRequest)
+		return
+	}
+	docs := make([]UploadFile, len(paths))
+	for i, fh := range parts {
+		f, err := fh.Open()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Read one byte past the cap so an oversized file is still seen as
+		// oversized by the plan without buffering all of it.
+		b, err := io.ReadAll(io.LimitReader(f, maxUploadFileBytes+1))
+		f.Close()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		docs[i] = UploadFile{Path: paths[i], Content: string(b)}
+	}
+	err := s.store.Upload(ns, docs, comment, reviewed)
+	var blocked *UploadBlockedError
+	if errors.As(err, &blocked) {
+		writeJSON(w, http.StatusConflict, uploadCheckResponse{OK: false, UploadPlan: blocked.Plan})
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, uploadLanding(ns, paths), http.StatusSeeOther)
+}
+
+// uploadLanding is the home tree with the namespace selected, opened at the
+// uploaded root folder when every file shares one.
+func uploadLanding(ns string, paths []string) string {
+	v := url.Values{"ns": {ns}}
+	roots := map[string]bool{}
+	for _, p := range paths {
+		root, _, found := strings.Cut(p, "/")
+		if !found {
+			root = ""
+		}
+		roots[root] = true
+	}
+	if len(roots) == 1 {
+		for root := range roots {
+			if root != "" {
+				v.Set("open", root)
+			}
+		}
+	}
+	return "/ui/?" + v.Encode()
+}

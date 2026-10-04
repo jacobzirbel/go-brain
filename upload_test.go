@@ -28,22 +28,7 @@ func uploadMux(t *testing.T, s *SQLiteStore) (*http.ServeMux, *http.Cookie) {
 	return mux, &http.Cookie{Name: sessionCookieName, Value: tok}
 }
 
-type checkFile struct {
-	Path string `json:"path"`
-	Size int64  `json:"size"`
-}
-
-type checkResponse struct {
-	OK           bool             `json:"ok"`
-	Create       int              `json:"create"`
-	NewNamespace bool             `json:"new_namespace"`
-	Conflicts    []uploadConflict `json:"conflicts"`
-	Duplicates   [][]string       `json:"duplicates"`
-	Oversized    []string         `json:"oversized"`
-	Invalid      []string         `json:"invalid"`
-}
-
-func postCheck(t *testing.T, s *SQLiteStore, ns string, files ...checkFile) checkResponse {
+func postCheck(t *testing.T, s *SQLiteStore, ns string, files ...UploadFileSpec) uploadCheckResponse {
 	t.Helper()
 	mux, cookie := uploadMux(t, s)
 	body, _ := json.Marshal(map[string]any{"namespace": ns, "files": files})
@@ -55,7 +40,7 @@ func postCheck(t *testing.T, s *SQLiteStore, ns string, files ...checkFile) chec
 	if rr.Code != 200 {
 		t.Fatalf("check: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-	var out checkResponse
+	var out uploadCheckResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("check: bad json %q: %v", rr.Body.String(), err)
 	}
@@ -67,10 +52,10 @@ func TestUploadCheck_CleanBatch(t *testing.T) {
 	_ = s.Write("ns", "other.md", "x")
 
 	got := postCheck(t, s, "ns",
-		checkFile{"notes/a.md", 10},
-		checkFile{"notes/sub/b.md", 20},
+		UploadFileSpec{"notes/a.md", 10},
+		UploadFileSpec{"notes/sub/b.md", 20},
 	)
-	if !got.OK || got.Create != 2 || got.NewNamespace {
+	if !got.OK || got.CreateCount != 2 || got.NewNamespace {
 		t.Fatalf("want ok, 2 creates, existing namespace; got %+v", got)
 	}
 	if len(got.Conflicts)+len(got.Duplicates)+len(got.Oversized)+len(got.Invalid) != 0 {
@@ -84,12 +69,15 @@ func TestUploadCheck_ExactAndCaseOnlyConflicts(t *testing.T) {
 	_ = s.Write("ns", "notes/todo.md", "x")
 
 	got := postCheck(t, s, "ns",
-		checkFile{"notes/a.md", 1},
-		checkFile{"Notes/Todo.md", 1},
-		checkFile{"notes/new.md", 1},
+		UploadFileSpec{"notes/a.md", 1},
+		UploadFileSpec{"Notes/Todo.md", 1},
+		UploadFileSpec{"notes/new.md", 1},
 	)
 	if got.OK {
 		t.Fatal("conflicts must block")
+	}
+	if got.CreateCount != 1 {
+		t.Fatalf("only notes/new.md is creatable, got count %d", got.CreateCount)
 	}
 	want := []uploadConflict{
 		{Path: "notes/a.md", Existing: "notes/a.md"},
@@ -103,9 +91,9 @@ func TestUploadCheck_ExactAndCaseOnlyConflicts(t *testing.T) {
 func TestUploadCheck_DuplicatesInBatchIgnoringCase(t *testing.T) {
 	s := setupStore(t)
 	got := postCheck(t, s, "ns",
-		checkFile{"notes/A.md", 1},
-		checkFile{"notes/a.md", 1},
-		checkFile{"notes/b.md", 1},
+		UploadFileSpec{"notes/A.md", 1},
+		UploadFileSpec{"notes/a.md", 1},
+		UploadFileSpec{"notes/b.md", 1},
 	)
 	if got.OK {
 		t.Fatal("duplicates must block")
@@ -120,12 +108,12 @@ func TestUploadCheck_OversizedAndInvalidReportedTogether(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "x/taken.md", "x")
 	got := postCheck(t, s, "ns",
-		checkFile{"x/big.md", 1<<20 + 1},
-		checkFile{"x/ok.md", 1 << 20},
-		checkFile{"x/pic.png", 1},
-		checkFile{"x/.hidden/h.md", 1},
-		checkFile{"x/../escape.md", 1},
-		checkFile{"x/taken.md", 1},
+		UploadFileSpec{"x/big.md", 1<<20 + 1},
+		UploadFileSpec{"x/ok.md", 1 << 20},
+		UploadFileSpec{"x/pic.png", 1},
+		UploadFileSpec{"x/.hidden/h.md", 1},
+		UploadFileSpec{"x/../escape.md", 1},
+		UploadFileSpec{"x/taken.md", 1},
 	)
 	if got.OK {
 		t.Fatal("blockers must block")
@@ -143,7 +131,7 @@ func TestUploadCheck_OversizedAndInvalidReportedTogether(t *testing.T) {
 
 func TestUploadCheck_NewNamespaceFlaggedAndNothingWritten(t *testing.T) {
 	s := setupStore(t)
-	got := postCheck(t, s, "Fresh", checkFile{"a.md", 1})
+	got := postCheck(t, s, "Fresh", UploadFileSpec{"a.md", 1})
 	if !got.OK || !got.NewNamespace {
 		t.Fatalf("want ok + new namespace, got %+v", got)
 	}
@@ -162,10 +150,10 @@ func TestUploadCheck_ArchivedAndDeletedPathsAccepted(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "a.md", "live")
 	got := postCheck(t, s, "ns",
-		checkFile{"archived/a.md", 1},
-		checkFile{"deleted/b.md", 1},
+		UploadFileSpec{"archived/a.md", 1},
+		UploadFileSpec{"deleted/b.md", 1},
 	)
-	if !got.OK || got.Create != 2 {
+	if !got.OK || got.CreateCount != 2 {
 		t.Fatalf("archived/deleted paths should upload as-is, got %+v", got)
 	}
 }
@@ -274,6 +262,22 @@ func TestUpload_CreatesMissingNamespaceAndIsSearchable(t *testing.T) {
 	}
 }
 
+func TestUploadCheck_CountExcludesBlockedFiles(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("ns", "taken.md", "x")
+	got := postCheck(t, s, "ns",
+		UploadFileSpec{"taken.md", 1},
+		UploadFileSpec{"dup.md", 1},
+		UploadFileSpec{"DUP.md", 1},
+		UploadFileSpec{"big.md", 1<<20 + 1},
+		UploadFileSpec{"pic.png", 1},
+		UploadFileSpec{"fine.md", 1},
+	)
+	if got.CreateCount != 1 {
+		t.Fatalf("only fine.md is creatable, got count %d", got.CreateCount)
+	}
+}
+
 func TestUpload_ClosedNamespaceAccepted(t *testing.T) {
 	s := setupStore(t)
 	_ = s.Write("ns", "a.md", "x")
@@ -298,7 +302,7 @@ func TestUpload_OneConflictWritesNothing(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("want 409, got %d: %s", rr.Code, rr.Body.String())
 	}
-	var got checkResponse
+	var got uploadCheckResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || len(got.Conflicts) != 1 {
 		t.Fatalf("want the conflict reported, got %s", rr.Body.String())
 	}
@@ -348,5 +352,26 @@ func TestManualEntry_LowercasesNamespace(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if c, _, err := s.Read("mixedcase", "a.md"); err != nil || c != "x" {
 		t.Fatalf("want file in lowercased namespace, got %q err=%v (status %d)", c, err, rr.Code)
+	}
+}
+
+func TestHome_ShowsClosedNamespaceWhenAskedByName(t *testing.T) {
+	s := setupStore(t)
+	_ = s.Write("open-ns", "a.md", "x")
+	_ = s.Write("shut", "a.md", "x")
+	_ = s.SetNamespaceClosed("shut", true)
+	mux, cookie := uploadMux(t, s)
+	get := func(target string) string {
+		req := httptest.NewRequest("GET", target, nil)
+		req.AddCookie(cookie)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		return rr.Body.String()
+	}
+	if strings.Contains(get("/ui/"), `data-ns="shut"`) {
+		t.Fatal("closed namespace should stay off the default home page")
+	}
+	if !strings.Contains(get("/ui/?ns=shut"), `data-ns="shut"`) {
+		t.Fatal("closed namespace should show when asked for by name (upload landing)")
 	}
 }
