@@ -359,7 +359,19 @@ type mcpInitializeResult struct {
 	ProtocolVersion string          `json:"protocolVersion"`
 	ServerInfo      mcpServerInfo   `json:"serverInfo"`
 	Capabilities    mcpCapabilities `json:"capabilities"`
+	Instructions    string          `json:"instructions,omitempty"`
 }
+
+// mcpInstructions is sent in the initialize result. Clients that defer tool
+// schemas (tool search) still place server instructions in the model's
+// context, so this is what keeps the model aware that gobrain's tools exist
+// when only their names — or nothing — are loaded.
+const mcpInstructions = `gobrain is the user's persistent memory: namespaced markdown files that survive across sessions. ` +
+	`Tools (always available from this server): boot, read, tree, search, namespaces, create, append, edit, ` +
+	`append_to_section, upsert_section, force_write, move, move_many, archive, remove. ` +
+	`If your client defers tool schemas, load these tools before concluding gobrain is unavailable — ` +
+	`never tell the user you cannot read or write gobrain without first trying. ` +
+	`Start with boot(namespace) to load a namespace's index.md and state.md.`
 
 type mcpServerInfo struct {
 	Name    string `json:"name"`
@@ -392,6 +404,7 @@ func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		respond(mcpInitializeResult{
 			ProtocolVersion: "2024-11-05",
 			ServerInfo:      mcpServerInfo{Name: "go-brain", Version: "0.1.0"},
+			Instructions:    mcpInstructions,
 		})
 	case "tools/list":
 		respond(struct {
