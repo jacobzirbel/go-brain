@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,10 @@ func TestLint_Checks(t *testing.T) {
 		{"a", "journal/2026-07-08.md", "x"},
 		{"a", "journal/index.md", "x"},
 		{"b", "notes.md", "x"},
+		{"c", "index.md", "x"},
+		{"c", "state.md", strings.Repeat("y", 4001)},
+		{"d", "index.md", "   "},
+		{"d", "state.md", "x"},
 	} {
 		if err := s.Write(w[0], w[1], w[2]); err != nil {
 			t.Fatal(err)
@@ -34,7 +39,7 @@ func TestLint_Checks(t *testing.T) {
 		t.Fatalf("error: %+v", res)
 	}
 	r := res.(lintResult)
-	want := map[string]int{"missing_core": 2, "stale_state": 1, "expired_check": 1, "journal_name": 1}
+	want := map[string]int{"boot_size": 1, "missing_core": 3, "stale_state": 1, "expired_check": 1, "journal_name": 1}
 	for k, v := range want {
 		if r.Counts[k] != v {
 			t.Errorf("%s: want %d, got %d (%+v)", k, v, r.Counts[k], r.Findings)
