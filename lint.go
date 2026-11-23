@@ -13,17 +13,13 @@ import (
 // only what lint points at.
 
 var lintToolDef = toolDef{
-	Name: "lint",
-	Description: "Upkeep checks over one namespace or all of them, without reading content yourself. Findings: " +
-		"missing_core (no index.md or state.md); stale_state (another non-journal file changed more than a day after state.md — state likely lags); " +
-		"expired_check (a line carrying \"(check YYYY-MM-DD)\" whose date has passed — re-verify the line, then bump the date); " +
-		"journal_name (journal file not named YYYY-MM-DDTHHMM_slug.md — use the wrap tool, which names entries itself). " +
-		"Excludes archived/, deleted/ and closed namespaces.",
+	Name:        "lint",
+	Description: "Namespace maintenance: upkeep findings (missing_core, stale_state, expired_check, journal_name, dangling_link) without reading files yourself.",
 	InputSchema: inputSchema{
 		Type: "object",
 		Properties: map[string]property{
 			"namespace": {Type: "string", Description: "One namespace. Omit or pass \"*\" for all."},
-			"checks":    {Type: "string", Description: "Optional comma-separated subset: missing_core, stale_state, expired_check, journal_name."},
+			"checks":    {Type: "string", Description: "Comma-separated subset of checks."},
 		},
 	},
 }
@@ -169,6 +165,13 @@ func (s *SQLiteStore) Lint(ns string, want map[string]bool, now time.Time) ([]Li
 				}
 			}
 		}
+	}
+	if on("dangling_link") {
+		lf, err := s.lintLinks(byNS)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lf...)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Namespace != out[j].Namespace {
