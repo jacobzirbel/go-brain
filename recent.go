@@ -13,7 +13,7 @@ import (
 
 var recentToolDef = toolDef{
 	Name:        "recent",
-	Description: "What changed since a time — files updated at or after `since`, newest first, across every namespace by default. Use it to find which namespaces a sweep or review should look at, without one tree call per namespace. Returns each file's namespace, filename, updated_at and size, plus per-namespace change counts. Excludes archived/ (pass include_archive=true), deleted/, and closed namespaces.",
+	Description: "Namespace maintenance: files changed since a time, newest first, with per-namespace counts.",
 	InputSchema: inputSchema{
 		Type: "object",
 		Properties: map[string]property{
