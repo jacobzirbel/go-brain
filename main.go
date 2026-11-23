@@ -58,7 +58,14 @@ func newServer(cfg config, store *SQLiteStore) *server {
 		tokens: tokenStore{tokens: map[string]struct{}{}},
 	}
 	if cfg.secretKey != "" {
-		s.tokens.add(cfg.secretKey)
+		s.tokens.add(cfg.secretKey) // before persist is set: config-only, never stored
+	}
+	if store != nil {
+		if err := store.EnsureTokenTable(); err != nil {
+			log.Printf("token table: %v (tokens will not survive restarts)", err)
+		} else {
+			s.tokens.persist = store
+		}
 	}
 	return s
 }
@@ -66,27 +73,51 @@ func newServer(cfg config, store *SQLiteStore) *server {
 // ── Token store ───────────────────────────────────────────────────────────────────────────
 
 type tokenStore struct {
-	mu     sync.RWMutex
-	tokens map[string]struct{}
+	mu      sync.RWMutex
+	tokens  map[string]struct{}
+	persist tokenPersister // nil: memory only (tests)
 }
 
 func (t *tokenStore) add(tok string) {
 	t.mu.Lock()
 	t.tokens[tok] = struct{}{}
 	t.mu.Unlock()
+	if t.persist != nil {
+		if err := t.persist.SaveToken(tok); err != nil {
+			log.Printf("persist token: %v", err)
+		}
+	}
 }
 
 func (t *tokenStore) has(tok string) bool {
 	t.mu.RLock()
 	_, ok := t.tokens[tok]
 	t.mu.RUnlock()
-	return ok
+	if ok || t.persist == nil {
+		return ok
+	}
+	found, err := t.persist.HasToken(tok)
+	if err != nil {
+		log.Printf("lookup token: %v", err)
+		return false
+	}
+	if found {
+		t.mu.Lock()
+		t.tokens[tok] = struct{}{}
+		t.mu.Unlock()
+	}
+	return found
 }
 
 func (t *tokenStore) delete(tok string) {
 	t.mu.Lock()
 	delete(t.tokens, tok)
 	t.mu.Unlock()
+	if t.persist != nil {
+		if err := t.persist.DeleteToken(tok); err != nil {
+			log.Printf("delete token: %v", err)
+		}
+	}
 }
 
 func randHex(n int) string {
