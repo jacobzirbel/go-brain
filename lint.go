@@ -44,7 +44,7 @@ type LintFinding struct {
 }
 
 type lintResult struct {
-	Findings []LintFinding `json:"findings"`
+	Findings []LintFinding  `json:"findings"`
 	Counts   map[string]int `json:"counts"`
 	Total    int            `json:"total"`
 }
