@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// initialize must carry server instructions naming every tool, so clients that
+// initialize must carry server instructions naming every everyday tool (maintenance tools by count), so clients that
 // defer tool schemas still tell the model gobrain's tools exist.
 func TestInitializeInstructionsNameEveryTool(t *testing.T) {
 	srv := newServer(config{}, nil)
@@ -28,8 +28,14 @@ func TestInitializeInstructionsNameEveryTool(t *testing.T) {
 		t.Fatal("initialize returned no instructions")
 	}
 	for _, tool := range mcpTools {
+		if maintenanceTools[tool.Name] {
+			continue
+		}
 		if !strings.Contains(got, tool.Name) {
 			t.Errorf("instructions do not mention tool %q", tool.Name)
 		}
+	}
+	if !strings.Contains(got, "more for namespace maintenance") {
+		t.Errorf("instructions do not count maintenance tools: %q", got)
 	}
 }
