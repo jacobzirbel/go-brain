@@ -70,7 +70,7 @@ func newServer(cfg config, store *SQLiteStore) *server {
 	return s
 }
 
-// ── Token store ───────────────────────────────────────────────────────────────────────────
+// ── Token store ──────────────────────────────────────────────────────────────────────────
 
 type tokenStore struct {
 	mu      sync.RWMutex
@@ -171,7 +171,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-// ── OAuth endpoints ───────────────────────────────────────────────────────────────────────
+// ── OAuth endpoints ─────────────────────────────────────────────────────────────────────
 
 type oauthMetadata struct {
 	Issuer                        string   `json:"issuer"`
@@ -398,7 +398,7 @@ type mcpInitializeResult struct {
 // context, so this is what keeps the model aware that gobrain's tools exist
 // when only their names — or nothing — are loaded.
 const mcpInstructions = `gobrain is the user's persistent memory: namespaced markdown files that survive across sessions. ` +
-	`Tools (always available from this server): boot, read, tree, search, recent, namespaces, create, append, edit, ` +
+	`Tools (always available from this server): boot, read, tree, search, recent, namespaces, create, append, edit, wrap, ` +
 	`append_to_section, upsert_section, force_write, move, move_many, archive, remove. ` +
 	`If your client defers tool schemas, load these tools before concluding gobrain is unavailable — ` +
 	`never tell the user you cannot read or write gobrain without first trying. ` +
@@ -461,7 +461,7 @@ func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────────────
+// ── Main ────────────────────────────────────────────────────────────────────────────
 
 func main() {
 	cfg := loadConfig()
