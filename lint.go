@@ -14,7 +14,7 @@ import (
 
 var lintToolDef = toolDef{
 	Name:        "lint",
-	Description: "Namespace maintenance: upkeep findings (missing_core, stale_state, expired_check, journal_name, dangling_link) without reading files yourself.",
+	Description: "Namespace maintenance: upkeep findings (missing_core, stale_state, expired_check, journal_name, dangling_link, boot_size) without reading files yourself.",
 	InputSchema: inputSchema{
 		Type: "object",
 		Properties: map[string]property{
@@ -51,6 +51,11 @@ var (
 )
 
 const staleStateGap = 24 * time.Hour
+
+// bootSizeLimit: a state.md over this many characters is being used as
+// reference rather than a snapshot (experiment 10: six of seven states over
+// 4K restated decision files or carried stale lines).
+const bootSizeLimit = 4000
 
 func toolLint(s *SQLiteStore, a toolArgs) (any, bool) {
 	ns := a.ns("namespace")
@@ -118,19 +123,28 @@ func (s *SQLiteStore) Lint(ns string, want map[string]bool, now time.Time) ([]Li
 		var state *lintFile
 		hasIndex := false
 		for i := range files {
+			empty := strings.TrimSpace(files[i].body) == ""
 			switch files[i].name {
 			case "state.md":
-				state = &files[i]
+				if !empty {
+					state = &files[i]
+				}
 			case "index.md":
-				hasIndex = true
+				hasIndex = !empty
+			}
+		}
+		if on("boot_size") && state != nil {
+			if size := len([]rune(state.body)); size > bootSizeLimit {
+				out = append(out, LintFinding{Namespace: n, Filename: "state.md", Check: "boot_size",
+					Detail: fmt.Sprintf("state.md is %d characters (limit %d): move reference material to topic files and keep only what is true now", size, bootSizeLimit)})
 			}
 		}
 		if on("missing_core") {
 			if !hasIndex {
-				out = append(out, LintFinding{Namespace: n, Check: "missing_core", Detail: "no index.md"})
+				out = append(out, LintFinding{Namespace: n, Check: "missing_core", Detail: "no index.md (or it is empty)"})
 			}
 			if state == nil {
-				out = append(out, LintFinding{Namespace: n, Check: "missing_core", Detail: "no state.md"})
+				out = append(out, LintFinding{Namespace: n, Check: "missing_core", Detail: "no state.md (or it is empty)"})
 			}
 		}
 		if on("stale_state") && state != nil {
